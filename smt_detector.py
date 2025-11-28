@@ -222,6 +222,82 @@ def check_swing_smt(
     return None
 
 
+def _calculate_absorbed_level(
+    df: pd.DataFrame,
+    fvg_info: Dict[str, Any],
+    fvg_timestamp: Any,
+    exclude_current: bool = True
+) -> float:
+    """
+    Calculate the deepest level an FVG has been absorbed (tested) to.
+    
+    For Bullish FVG: Returns the deepest low that broke the top (closest to bottom)
+    For Bearish FVG: Returns the highest high that broke the bottom (closest to top)
+    
+    If no absorption has occurred, returns the original boundary (top for bullish, bottom for bearish).
+    
+    Args:
+        df: DataFrame with OHLC columns (up to current candle)
+        fvg_info: FVG dictionary with 'type', 'top', 'bottom', 'timestamp'
+        fvg_timestamp: Timestamp when FVG was formed
+        exclude_current: If True, exclude the last candle (current) from calculation
+    
+    Returns:
+        The absorbed_to_level (deepest penetration level)
+    """
+    # Find the index of the FVG formation (C1 timestamp)
+    try:
+        fvg_idx = df.index.get_loc(fvg_timestamp)
+        if isinstance(fvg_idx, slice):
+            fvg_idx = fvg_idx.start
+    except (KeyError, TypeError):
+        # FVG not in current data, return original boundary
+        return fvg_info['top'] if fvg_info['type'] == 'bullish' else fvg_info['bottom']
+    
+    # FVG spans: fvg_idx (C1), fvg_idx+1 (C2), fvg_idx+2 (C3)
+    # We check from fvg_idx+3 onwards (after FVG formation)
+    if fvg_idx + 2 >= len(df):
+        # Not enough data after FVG formation
+        return fvg_info['top'] if fvg_info['type'] == 'bullish' else fvg_info['bottom']
+    
+    # Get all candles after FVG formation, excluding current candle if requested
+    end_idx = -1 if exclude_current else len(df)
+    post_fvg_data = df.iloc[fvg_idx + 3:end_idx]
+    
+    if len(post_fvg_data) == 0:
+        # No candles after FVG formation yet (or only current candle)
+        return fvg_info['top'] if fvg_info['type'] == 'bullish' else fvg_info['bottom']
+    
+    if fvg_info['type'] == 'bullish':
+        # Bullish FVG: Find deepest low that broke the top
+        # The absorbed level is the lowest (deepest) low that penetrated below the top
+        lows_that_broke_top = post_fvg_data[post_fvg_data['Low'] < fvg_info['top']]['Low']
+        
+        if len(lows_that_broke_top) == 0:
+            # No absorption yet, return original top
+            return fvg_info['top']
+        
+        # Return the deepest (lowest) penetration
+        # This represents how far into the FVG price has tested
+        deepest = lows_that_broke_top.min()
+        # Clamp to FVG boundaries (shouldn't go below bottom, but handle edge case)
+        return max(deepest, fvg_info['bottom'])
+    
+    else:  # bearish
+        # Bearish FVG: Find highest high that broke the bottom
+        # The absorbed level is the highest (deepest) high that penetrated above the bottom
+        highs_that_broke_bottom = post_fvg_data[post_fvg_data['High'] > fvg_info['bottom']]['High']
+        
+        if len(highs_that_broke_bottom) == 0:
+            # No absorption yet, return original bottom
+            return fvg_info['bottom']
+        
+        # Return the deepest (highest) penetration
+        deepest = highs_that_broke_bottom.max()
+        # Clamp to FVG boundaries (shouldn't go above top, but handle edge case)
+        return min(deepest, fvg_info['top'])
+
+
 def check_fvg_smt(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
@@ -232,8 +308,12 @@ def check_fvg_smt(
     Checks for a "Key Level SMT" based on a Fair Value Gap (FVG).
     
     It looks back 'lookback_period' to find a shared FVG, then checks
-    if the current candle (-1) created a divergence by sweeping/filling
-    its FVG while the other asset failed to.
+    if the current candle (-1) created a divergence by sweeping the
+    absorbed_to_level (deepest tested level) while the other asset failed to.
+    
+    The absorbed_to_level is dynamically calculated based on how deep the FVG
+    has been tested into historically. This prevents duplicate signals from
+    the same FVG.
     
     Args:
         df_a1: DataFrame for asset 1 with OHLC columns
@@ -261,6 +341,11 @@ def check_fvg_smt(
     if fvg_a1['type'] != fvg_a2['type']:
         return None
     
+    # Calculate absorbed_to_level for both assets (excluding current candle)
+    # This is the deepest level each FVG has been tested into historically
+    absorbed_a1 = _calculate_absorbed_level(df_a1, fvg_a1, fvg_a1['timestamp'], exclude_current=True)
+    absorbed_a2 = _calculate_absorbed_level(df_a2, fvg_a2, fvg_a2['timestamp'], exclude_current=True)
+    
     # Get current candle data
     c0_high_a1 = df_a1['High'].iloc[-1]
     c0_low_a1 = df_a1['Low'].iloc[-1]
@@ -272,54 +357,55 @@ def check_fvg_smt(
     
     # ===== Check for Bullish FVG SMT =====
     if fvg_type == 'bullish':
-        # A1 breaks FVG top (low goes below top), A2 fails to break (low stays above top)
-        if c0_low_a1 < fvg_a1['top'] and c0_low_a2 >= fvg_a2['top']:
+        # A1 breaks absorbed level (low goes below absorbed level), A2 fails to break
+        # Only signal if current low is DEEPER than the previous absorbed level
+        if c0_low_a1 < absorbed_a1 and c0_low_a2 >= absorbed_a2:
             return {
                 "signal_type": "Bullish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a1['timestamp'],
                 "sweeping_asset": asset_names[0],
                 "failing_asset": asset_names[1],
-                "reference_price": fvg_a1['top'],
-                "invalidation_level": fvg_a2['top']
+                "reference_price": absorbed_a1,  # Use absorbed level, not original top
+                "invalidation_level": absorbed_a2
             }
         
-        # A2 breaks FVG top (low goes below top), A1 fails to break (low stays above top)
-        if c0_low_a2 < fvg_a2['top'] and c0_low_a1 >= fvg_a1['top']:
+        # A2 breaks absorbed level (low goes below absorbed level), A1 fails to break
+        if c0_low_a2 < absorbed_a2 and c0_low_a1 >= absorbed_a1:
             return {
                 "signal_type": "Bullish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a2['timestamp'],
                 "sweeping_asset": asset_names[1],
                 "failing_asset": asset_names[0],
-                "reference_price": fvg_a2['top'],
-                "invalidation_level": fvg_a1['top']
+                "reference_price": absorbed_a2,  # Use absorbed level, not original top
+                "invalidation_level": absorbed_a1
             }
     
     # ===== Check for Bearish FVG SMT =====
     elif fvg_type == 'bearish':
-        # A1 breaks FVG bottom (high goes above bottom), A2 fails to break (high stays below bottom)
-        if c0_high_a1 > fvg_a1['bottom'] and c0_high_a2 <= fvg_a2['bottom']:
+        # A1 breaks absorbed level (high goes above absorbed level), A2 fails to break
+        if c0_high_a1 > absorbed_a1 and c0_high_a2 <= absorbed_a2:
             return {
                 "signal_type": "Bearish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a1['timestamp'],
                 "sweeping_asset": asset_names[0],
                 "failing_asset": asset_names[1],
-                "reference_price": fvg_a1['bottom'],
-                "invalidation_level": fvg_a2['bottom']
+                "reference_price": absorbed_a1,  # Use absorbed level, not original bottom
+                "invalidation_level": absorbed_a2
             }
         
-        # A2 breaks FVG bottom (high goes above bottom), A1 fails to break (high stays below bottom)
-        if c0_high_a2 > fvg_a2['bottom'] and c0_high_a1 <= fvg_a1['bottom']:
+        # A2 breaks absorbed level (high goes above absorbed level), A1 fails to break
+        if c0_high_a2 > absorbed_a2 and c0_high_a1 <= absorbed_a1:
             return {
                 "signal_type": "Bearish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a2['timestamp'],
                 "sweeping_asset": asset_names[1],
                 "failing_asset": asset_names[0],
-                "reference_price": fvg_a2['bottom'],
-                "invalidation_level": fvg_a1['bottom']
+                "reference_price": absorbed_a2,  # Use absorbed level, not original bottom
+                "invalidation_level": absorbed_a1
             }
     
     # No FVG SMT detected
