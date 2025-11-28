@@ -272,36 +272,10 @@ def check_fvg_smt(
     
     # ===== Check for Bullish FVG SMT =====
     if fvg_type == 'bullish':
-        # A1 fills (sweeps down through bottom), A2 respects (stays above)
-        if c0_low_a1 < fvg_a1['bottom'] and c0_low_a2 > fvg_a2['bottom']:
+        # A1 breaks FVG top (low goes below top), A2 fails to break (low stays above top)
+        if c0_low_a1 < fvg_a1['top'] and c0_low_a2 >= fvg_a2['top']:
             return {
                 "signal_type": "Bullish FVG SMT",
-                "timestamp": timestamp,
-                "reference_timestamp": fvg_a1['timestamp'],
-                "sweeping_asset": asset_names[0],
-                "failing_asset": asset_names[1],
-                "reference_price": fvg_a1['bottom'],
-                "invalidation_level": fvg_a2['bottom']
-            }
-        
-        # A2 fills (sweeps down through bottom), A1 respects (stays above)
-        if c0_low_a2 < fvg_a2['bottom'] and c0_low_a1 > fvg_a1['bottom']:
-            return {
-                "signal_type": "Bullish FVG SMT",
-                "timestamp": timestamp,
-                "reference_timestamp": fvg_a2['timestamp'],
-                "sweeping_asset": asset_names[1],
-                "failing_asset": asset_names[0],
-                "reference_price": fvg_a2['bottom'],
-                "invalidation_level": fvg_a1['bottom']
-            }
-    
-    # ===== Check for Bearish FVG SMT =====
-    elif fvg_type == 'bearish':
-        # A1 fills (sweeps up through top), A2 respects (stays below)
-        if c0_high_a1 > fvg_a1['top'] and c0_high_a2 < fvg_a2['top']:
-            return {
-                "signal_type": "Bearish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a1['timestamp'],
                 "sweeping_asset": asset_names[0],
@@ -310,16 +284,42 @@ def check_fvg_smt(
                 "invalidation_level": fvg_a2['top']
             }
         
-        # A2 fills (sweeps up through top), A1 respects (stays below)
-        if c0_high_a2 > fvg_a2['top'] and c0_high_a1 < fvg_a1['top']:
+        # A2 breaks FVG top (low goes below top), A1 fails to break (low stays above top)
+        if c0_low_a2 < fvg_a2['top'] and c0_low_a1 >= fvg_a1['top']:
             return {
-                "signal_type": "Bearish FVG SMT",
+                "signal_type": "Bullish FVG SMT",
                 "timestamp": timestamp,
                 "reference_timestamp": fvg_a2['timestamp'],
                 "sweeping_asset": asset_names[1],
                 "failing_asset": asset_names[0],
                 "reference_price": fvg_a2['top'],
                 "invalidation_level": fvg_a1['top']
+            }
+    
+    # ===== Check for Bearish FVG SMT =====
+    elif fvg_type == 'bearish':
+        # A1 breaks FVG bottom (high goes above bottom), A2 fails to break (high stays below bottom)
+        if c0_high_a1 > fvg_a1['bottom'] and c0_high_a2 <= fvg_a2['bottom']:
+            return {
+                "signal_type": "Bearish FVG SMT",
+                "timestamp": timestamp,
+                "reference_timestamp": fvg_a1['timestamp'],
+                "sweeping_asset": asset_names[0],
+                "failing_asset": asset_names[1],
+                "reference_price": fvg_a1['bottom'],
+                "invalidation_level": fvg_a2['bottom']
+            }
+        
+        # A2 breaks FVG bottom (high goes above bottom), A1 fails to break (high stays below bottom)
+        if c0_high_a2 > fvg_a2['bottom'] and c0_high_a1 <= fvg_a1['bottom']:
+            return {
+                "signal_type": "Bearish FVG SMT",
+                "timestamp": timestamp,
+                "reference_timestamp": fvg_a2['timestamp'],
+                "sweeping_asset": asset_names[1],
+                "failing_asset": asset_names[0],
+                "reference_price": fvg_a2['bottom'],
+                "invalidation_level": fvg_a1['bottom']
             }
     
     # No FVG SMT detected
