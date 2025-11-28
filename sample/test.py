@@ -141,20 +141,37 @@ def test_smt_detector(
         current_a1 = df_a1.iloc[:i+1]
         current_a2 = df_a2.iloc[:i+1]
         
-        """# Test Micro SMT
+        # Test Micro SMT
         signal = smt.check_micro_smt(current_a1, current_a2, asset_names)
         if signal:
             print_signal(signal, i, total_candles)
-            micro_count += 1"""
-        
-        """# Test Swing SMT
+            micro_count += 1
+            if visualize_signals:
+                try:
+                    visualize_micro_smt(
+                        signal, df_a1, df_a2, asset_names,
+                        candles_before=15, candles_after=5,
+                        save_path=f"micro_smt_signal_{micro_count}.png"
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create visualization: {e}")
+        # Test Swing SMT
         signal = smt.check_swing_smt(
             current_a1, current_a2, lookback_swing, asset_names
         )
         if signal:
             print_signal(signal, i, total_candles)
-            swing_count += 1"""
-        
+            swing_count += 1
+
+            if visualize_signals:
+                try:
+                    visualize_swing_smt(
+                        signal, df_a1, df_a2, asset_names, lookback_swing,
+                        candles_before=15, candles_after=5,
+                        save_path=f"swing_smt_signal_{swing_count}.png"
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create visualization: {e}")
         # Test FVG SMT
         signal = smt.check_fvg_smt(
             current_a1, current_a2, lookback_fvg, asset_names
@@ -318,6 +335,253 @@ def visualize_fvg_smt(
         plt.show()
 
 
+def visualize_swing_smt(
+    signal: dict,
+    df_a1: pd.DataFrame,
+    df_a2: pd.DataFrame,
+    asset_names: tuple,
+    lookback_swing: int,
+    candles_before: int = 10,
+    candles_after: int = 5,
+    save_path: str = None
+):
+    """
+    Create a visual chart showing the Swing SMT signal.
+    
+    Args:
+        signal: Signal dictionary from Swing SMT detector
+        df_a1: Full DataFrame for asset 1
+        df_a2: Full DataFrame for asset 2
+        asset_names: Tuple of asset names
+        lookback_swing: Lookback period used for swing detection
+        candles_before: Number of candles before swing point to show
+        candles_after: Number of candles after signal to show
+        save_path: Optional path to save the image (if None, displays interactively)
+    """
+    if signal['signal_type'] not in ['Bullish Swing SMT', 'Bearish Swing SMT']:
+        print("Warning: This function only visualizes Swing SMT signals")
+        return
+    
+    # Find the signal timestamp index
+    signal_timestamp = signal['timestamp']
+    try:
+        signal_idx = df_a1.index.get_loc(signal_timestamp)
+        if isinstance(signal_idx, slice):
+            signal_idx = signal_idx.start
+    except KeyError:
+        print(f"Warning: Signal timestamp {signal_timestamp} not found in data")
+        return
+    
+    # Find the swing reference timestamp index
+    ref_timestamp = signal['reference_timestamp']
+    try:
+        ref_idx = df_a1.index.get_loc(ref_timestamp)
+        if isinstance(ref_idx, slice):
+            ref_idx = ref_idx.start
+    except KeyError:
+        print(f"Warning: Reference timestamp {ref_timestamp} not found in data")
+        return
+    
+    # Determine the window to show
+    # Show from a few candles before swing point to a few after signal
+    swing_start_idx = max(0, ref_idx - candles_before)
+    window_end_idx = min(len(df_a1), signal_idx + candles_after + 1)
+    
+    # Get the data window
+    window_a1 = df_a1.iloc[swing_start_idx:window_end_idx]
+    window_a2 = df_a2.iloc[swing_start_idx:window_end_idx]
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    fig.suptitle(f"{signal['signal_type']} - {signal_timestamp}", 
+                 fontsize=16, fontweight='bold')
+    
+    # Determine swing type from signal
+    is_bullish = 'Bullish' in signal['signal_type']
+    
+    # Plot both assets
+    for ax, window_df, asset_name in [
+        (ax1, window_a1, asset_names[0]),
+        (ax2, window_a2, asset_names[1])
+    ]:
+        # Plot candlesticks
+        _plot_candlesticks(ax, window_df, asset_name)
+        
+        # Highlight swing point
+        if ref_timestamp in window_df.index:
+            try:
+                swing_window_idx = window_df.index.get_loc(ref_timestamp)
+                if isinstance(swing_window_idx, slice):
+                    swing_window_idx = swing_window_idx.start
+                _highlight_swing_point(ax, window_df, signal, swing_window_idx, asset_name, is_bullish)
+            except (KeyError, TypeError):
+                pass
+        
+        # Mark signal candle
+        if signal_timestamp in window_df.index:
+            try:
+                signal_window_idx = window_df.index.get_loc(signal_timestamp)
+                if isinstance(signal_window_idx, slice):
+                    signal_window_idx = signal_window_idx.start
+                _mark_signal_candle(ax, window_df, signal, signal_window_idx, asset_name)
+            except (KeyError, TypeError):
+                pass
+        
+        # Draw reference and invalidation levels
+        if asset_name == signal['sweeping_asset']:
+            ax.axhline(y=signal['reference_price'], color='red', linestyle='--', 
+                      linewidth=2, label=f"Reference: {signal['reference_price']:.2f}")
+        else:
+            ax.axhline(y=signal['invalidation_level'], color='orange', linestyle='--', 
+                      linewidth=2, label=f"Invalidation: {signal['invalidation_level']:.2f}")
+        
+        ax.set_ylabel(f'{asset_name} Price', fontsize=12)
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+    
+    ax2.set_xlabel('Time', fontsize=12)
+    
+    # Add annotation
+    swing_type = "Swing Low" if is_bullish else "Swing High"
+    annotation_text = (
+        f"Sweeping Asset: {signal['sweeping_asset']}\n"
+        f"Failing Asset: {signal['failing_asset']}\n"
+        f"Swing Type: {swing_type}"
+    )
+    fig.text(0.02, 0.02, annotation_text, fontsize=10, 
+             verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Chart saved to: {save_path}")
+        plt.close(fig)  # Close to free memory
+    else:
+        plt.show()
+
+
+def visualize_micro_smt(
+    signal: dict,
+    df_a1: pd.DataFrame,
+    df_a2: pd.DataFrame,
+    asset_names: tuple,
+    candles_before: int = 10,
+    candles_after: int = 5,
+    save_path: str = None
+):
+    """
+    Create a visual chart showing the Micro SMT signal.
+    
+    Args:
+        signal: Signal dictionary from Micro SMT detector
+        df_a1: Full DataFrame for asset 1
+        df_a2: Full DataFrame for asset 2
+        asset_names: Tuple of asset names
+        candles_before: Number of candles before previous candle to show
+        candles_after: Number of candles after signal to show
+        save_path: Optional path to save the image (if None, displays interactively)
+    """
+    if signal['signal_type'] not in ['Bullish Micro SMT', 'Bearish Micro SMT']:
+        print("Warning: This function only visualizes Micro SMT signals")
+        return
+    
+    # Find the signal timestamp index (current candle)
+    signal_timestamp = signal['timestamp']
+    try:
+        signal_idx = df_a1.index.get_loc(signal_timestamp)
+        if isinstance(signal_idx, slice):
+            signal_idx = signal_idx.start
+    except KeyError:
+        print(f"Warning: Signal timestamp {signal_timestamp} not found in data")
+        return
+    
+    # Previous candle is at signal_idx - 1 (reference candle)
+    if signal_idx < 1:
+        print("Warning: Not enough data for Micro SMT visualization")
+        return
+    
+    prev_idx = signal_idx - 1
+    prev_timestamp = df_a1.index[prev_idx]
+    
+    # Determine the window to show
+    # Show from a few candles before previous candle to a few after signal
+    window_start_idx = max(0, prev_idx - candles_before)
+    window_end_idx = min(len(df_a1), signal_idx + candles_after + 1)
+    
+    # Get the data window
+    window_a1 = df_a1.iloc[window_start_idx:window_end_idx]
+    window_a2 = df_a2.iloc[window_start_idx:window_end_idx]
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    fig.suptitle(f"{signal['signal_type']} - {signal_timestamp}", 
+                 fontsize=16, fontweight='bold')
+    
+    # Determine if bullish or bearish
+    is_bullish = 'Bullish' in signal['signal_type']
+    
+    # Plot both assets
+    for ax, window_df, asset_name in [
+        (ax1, window_a1, asset_names[0]),
+        (ax2, window_a2, asset_names[1])
+    ]:
+        # Plot candlesticks
+        _plot_candlesticks(ax, window_df, asset_name)
+        
+        # Highlight previous candle (reference candle)
+        if prev_timestamp in window_df.index:
+            try:
+                prev_window_idx = window_df.index.get_loc(prev_timestamp)
+                if isinstance(prev_window_idx, slice):
+                    prev_window_idx = prev_window_idx.start
+                _highlight_reference_candle(ax, window_df, prev_window_idx, asset_name, is_bullish)
+            except (KeyError, TypeError):
+                pass
+        
+        # Mark signal candle (current candle)
+        if signal_timestamp in window_df.index:
+            try:
+                signal_window_idx = window_df.index.get_loc(signal_timestamp)
+                if isinstance(signal_window_idx, slice):
+                    signal_window_idx = signal_window_idx.start
+                _mark_signal_candle(ax, window_df, signal, signal_window_idx, asset_name)
+            except (KeyError, TypeError):
+                pass
+        
+        # Draw reference and invalidation levels
+        if asset_name == signal['sweeping_asset']:
+            ax.axhline(y=signal['reference_price'], color='red', linestyle='--', 
+                      linewidth=2, label=f"Reference: {signal['reference_price']:.2f}")
+        else:
+            ax.axhline(y=signal['invalidation_level'], color='orange', linestyle='--', 
+                      linewidth=2, label=f"Invalidation: {signal['invalidation_level']:.2f}")
+        
+        ax.set_ylabel(f'{asset_name} Price', fontsize=12)
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+    
+    ax2.set_xlabel('Time', fontsize=12)
+    
+    # Add annotation
+    annotation_text = (
+        f"Sweeping Asset: {signal['sweeping_asset']}\n"
+        f"Failing Asset: {signal['failing_asset']}\n"
+        f"Pattern: 2-Candle Micro SMT"
+    )
+    fig.text(0.02, 0.02, annotation_text, fontsize=10, 
+             verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Chart saved to: {save_path}")
+        plt.close(fig)  # Close to free memory
+    else:
+        plt.show()
+
+
 def _plot_candlesticks(ax, df: pd.DataFrame, asset_name: str):
     """Helper function to plot candlesticks."""
     for idx, (timestamp, row) in enumerate(df.iterrows()):
@@ -396,6 +660,85 @@ def _mark_signal_candle(ax, df: pd.DataFrame, signal: dict, signal_idx: int, ass
         ax.add_patch(circle)
         ax.text(signal_idx, signal_row['High'] + (signal_row['High'] - signal_row['Low']) * 0.1,
                'SIGNAL\n(Fails)', fontsize=9, ha='center', color='orange', fontweight='bold')
+
+
+def _highlight_swing_point(ax, df: pd.DataFrame, signal: dict, swing_idx: int, asset_name: str, is_bullish: bool):
+    """Helper function to highlight the swing point."""
+    swing_row = df.iloc[swing_idx]
+    
+    # Get the swing price (low for bullish, high for bearish)
+    if is_bullish:
+        swing_price = swing_row['Low']
+        label_text = "SWING LOW"
+        color = 'blue'
+    else:
+        swing_price = swing_row['High']
+        label_text = "SWING HIGH"
+        color = 'purple'
+    
+    # Draw a diamond marker at the swing point
+    ax.plot(swing_idx, swing_price, marker='D', markersize=12, 
+           color=color, markeredgecolor='black', markeredgewidth=2, 
+           zorder=5, label=label_text)
+    
+    # Add text label
+    offset = (swing_row['High'] - swing_row['Low']) * 0.15
+    if is_bullish:
+        text_y = swing_price - offset
+        va = 'top'
+    else:
+        text_y = swing_price + offset
+        va = 'bottom'
+    
+    ax.text(swing_idx, text_y, 
+           f"{label_text}\n{swing_price:.2f}",
+           fontsize=9, ha='center', va=va, color=color, fontweight='bold',
+           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor=color),
+           zorder=6)
+
+
+def _highlight_reference_candle(ax, df: pd.DataFrame, ref_idx: int, asset_name: str, is_bullish: bool):
+    """Helper function to highlight the reference candle (previous candle in Micro SMT)."""
+    ref_row = df.iloc[ref_idx]
+    
+    # Draw a rectangle around the reference candle
+    if is_bullish:
+        # For bullish, highlight the low
+        highlight_price = ref_row['Low']
+        color = 'blue'
+        label_text = "REF (Low)"
+    else:
+        # For bearish, highlight the high
+        highlight_price = ref_row['High']
+        color = 'purple'
+        label_text = "REF (High)"
+    
+    # Draw rectangle around the candle
+    rect = Rectangle((ref_idx - 0.4, ref_row['Low']), 0.8, 
+                    ref_row['High'] - ref_row['Low'],
+                    facecolor='none', edgecolor=color, linewidth=2.5, 
+                    linestyle='--', alpha=0.8, zorder=4)
+    ax.add_patch(rect)
+    
+    # Mark the reference price level
+    ax.plot(ref_idx, highlight_price, marker='o', markersize=10, 
+           color=color, markeredgecolor='black', markeredgewidth=2, 
+           zorder=5)
+    
+    # Add text label
+    offset = (ref_row['High'] - ref_row['Low']) * 0.15
+    if is_bullish:
+        text_y = highlight_price - offset
+        va = 'top'
+    else:
+        text_y = highlight_price + offset
+        va = 'bottom'
+    
+    ax.text(ref_idx, text_y, 
+           f"{label_text}\n{highlight_price:.2f}",
+           fontsize=9, ha='center', va=va, color=color, fontweight='bold',
+           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor=color),
+           zorder=6)
 
 
 def inspect_candle(df_a1: pd.DataFrame, df_a2: pd.DataFrame, idx: int, asset_names: tuple):
