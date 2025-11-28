@@ -94,8 +94,8 @@ def test_smt_detector(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
     asset_names: tuple = ("NQ", "ES"),
-    lookback_swing: int = 20,
-    lookback_fvg: int = 20,
+    lookback_swing: int = 3,
+    lookback_fvg: int = 10,
     start_idx: int = None,
     visualize_signals: bool = True
 ):
@@ -236,8 +236,8 @@ def visualize_fvg_smt(
     detection_data_a2 = df_a2.iloc[:signal_idx+1]
     
     # Find the FVG details
-    fvg_a1 = smt._find_recent_fvg(detection_data_a1, lookback_fvg)
-    fvg_a2 = smt._find_recent_fvg(detection_data_a2, lookback_fvg)
+    fvg_a1 = smt._find_recent_valid_fvg(detection_data_a1, lookback_fvg)
+    fvg_a2 = smt._find_recent_valid_fvg(detection_data_a2, lookback_fvg)
     
     if fvg_a1 is None or fvg_a2 is None:
         print("Warning: Could not find FVG details for visualization")
