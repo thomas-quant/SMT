@@ -12,6 +12,24 @@ import pandas as pd
 from typing import Optional, Dict, Any, Tuple
 
 
+def _validate_dataframes(df_a1: pd.DataFrame, df_a2: pd.DataFrame, min_len: int = 2) -> bool:
+    """
+    Validate that both dataframes are properly aligned and have sufficient data.
+    
+    Returns:
+        True if valid, False otherwise
+    """
+    # Check minimum length
+    if len(df_a1) < min_len or len(df_a2) < min_len:
+        return False
+    
+    # Check that current timestamps match (critical for accurate SMT detection)
+    if df_a1.index[-1] != df_a2.index[-1]:
+        return False
+    
+    return True
+
+
 def _check_divergence(
     c0_val_a1: float, 
     c0_val_a2: float, 
@@ -108,7 +126,8 @@ def check_micro_smt(
     This pattern compares the high/low of the current candle (index -1)
     to the high/low of the previous candle (index -2).
     """
-    if len(df_a1) < 2 or len(df_a2) < 2:
+    # Validate dataframes
+    if not _validate_dataframes(df_a1, df_a2, min_len=2):
         return None
     
     # Current candle values
@@ -210,7 +229,8 @@ def check_swing_smt(
         timestamp_tolerance: Allow swing timestamps to differ by this many candles.
                            Default 1 allows for micro SMTs between correlated assets.
     """
-    if len(df_a1) < lookback_period + 1 or len(df_a2) < lookback_period + 1:
+    # Validate dataframes
+    if not _validate_dataframes(df_a1, df_a2, min_len=lookback_period + 1):
         return None
     
     # Get lookback slice (excluding current candle)
@@ -318,6 +338,10 @@ def check_fvg_smt(
     """
     Checks for a "Key Level SMT" based on a Fair Value Gap (FVG).
     """
+    # Validate dataframes
+    if not _validate_dataframes(df_a1, df_a2, min_len=lookback_period + 1):
+        return None
+    
     fvg_a1 = _find_recent_valid_fvg(df_a1, lookback_period)
     fvg_a2 = _find_recent_valid_fvg(df_a2, lookback_period)
     
@@ -378,6 +402,8 @@ def _find_recent_valid_fvg(df: pd.DataFrame, lookback: int) -> Optional[Dict[str
     if len(df) < 3:
         return None
     
+    # Limit lookback to available data minus 3 (need room for the pattern)
+    # and ensure we don't look back more than requested
     max_lookback = min(lookback, len(df) - 3)
     
     # Scan backwards from most recent (excluding current candle)
