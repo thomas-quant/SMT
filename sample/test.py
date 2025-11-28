@@ -2,6 +2,7 @@
 
 import pandas as pd
 import smt_detector as smt
+from smt_break import SMTBreak
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
@@ -60,18 +61,43 @@ def test_smt_detector(
     micro_count = 0
     swing_count = 0
     fvg_count = 0
+    invalidation_count = 0
+    
+    # SMTBreak tracker for invalidation detection
+    break_tracker = SMTBreak()
     
     # Iterate through data, testing at each candle
     for i in range(start_idx, total_candles):
         # Get data up to current candle (inclusive)
         current_a1 = df_a1.iloc[:i+1]
         current_a2 = df_a2.iloc[:i+1]
+        candle = df_a1.iloc[i]
+        ts = df_a1.index[i]
+        
+        # Check for invalidations on this candle
+        broken = break_tracker.update_candle(candle['High'], candle['Low'], candle['Close'], ts)
+        for b in broken:
+            invalidation_count += 1
+            print(f"\n{'!'*60}")
+            print(f"INVALIDATED at Candle #{i + 1}: {b['signal']['signal_type']}")
+            print(f"Level {b['level']:.2f} broken at price {b['price']:.2f}")
+            print(f"Original signal: {b['signal']['timestamp']}")
+            if visualize_signals:
+                try:
+                    visualize_smt_break(
+                        b, df_a1, df_a2, asset_names,
+                        candles_before=5, candles_after=3,
+                        save_path=f"output/smt_break/smt_break_{invalidation_count}.png"
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create break visualization: {e}")
         
         # Test Micro SMT
         signal = smt.check_micro_smt(current_a1, current_a2, asset_names)
         if signal:
             print_signal(signal, i, total_candles)
             micro_count += 1
+            break_tracker.add(signal)
             if visualize_signals:
                 try:
                     visualize_micro_smt(
@@ -81,6 +107,7 @@ def test_smt_detector(
                     )
                 except Exception as e:
                     print(f"Warning: Could not create visualization: {e}")
+        
         # Test Swing SMT
         signal = smt.check_swing_smt(
             current_a1, current_a2, lookback_swing, asset_names
@@ -88,7 +115,7 @@ def test_smt_detector(
         if signal:
             print_signal(signal, i, total_candles)
             swing_count += 1
-
+            break_tracker.add(signal)
             if visualize_signals:
                 try:
                     visualize_swing_smt(
@@ -98,6 +125,7 @@ def test_smt_detector(
                     )
                 except Exception as e:
                     print(f"Warning: Could not create visualization: {e}")
+        
         # Test FVG SMT
         signal = smt.check_fvg_smt(
             current_a1, current_a2, lookback_fvg, asset_names
@@ -105,7 +133,7 @@ def test_smt_detector(
         if signal:
             print_signal(signal, i, total_candles)
             fvg_count += 1
-            # Visualize the signal if enabled
+            break_tracker.add(signal)
             if visualize_signals:
                 try:
                     visualize_fvg_smt(
@@ -116,7 +144,9 @@ def test_smt_detector(
                 except Exception as e:
                     print(f"Warning: Could not create visualization: {e}")
     
-    print(f"\nSUMMARY: Micro={micro_count}, Swing={swing_count}, FVG={fvg_count}, Total={micro_count + swing_count + fvg_count}")
+    total_signals = micro_count + swing_count + fvg_count
+    print(f"\nSUMMARY: Micro={micro_count}, Swing={swing_count}, FVG={fvg_count}, Total={total_signals}")
+    print(f"INVALIDATIONS: {invalidation_count}/{total_signals} signals broken")
 
 
 def visualize_fvg_smt(
@@ -292,6 +322,79 @@ def visualize_micro_smt(
     _save_or_show(fig, save_path)
 
 
+def visualize_smt_break(
+    break_info: dict, df_a1: pd.DataFrame, df_a2: pd.DataFrame, asset_names: tuple,
+    candles_before: int = 5, candles_after: int = 3, save_path: str = None
+):
+    """Create a visual chart showing the SMT signal being invalidated."""
+    signal = break_info['signal']
+    break_ts = break_info['ts']
+    invalidation_level = break_info['level']
+    signal_ts = signal['timestamp']
+    failing_asset = signal['failing_asset']
+    
+    try:
+        signal_idx = df_a1.index.get_loc(signal_ts)
+        break_idx = df_a1.index.get_loc(break_ts)
+        signal_idx = signal_idx.start if isinstance(signal_idx, slice) else signal_idx
+        break_idx = break_idx.start if isinstance(break_idx, slice) else break_idx
+    except KeyError:
+        return
+    
+    start_idx = max(0, signal_idx - candles_before)
+    end_idx = min(len(df_a1), break_idx + candles_after + 1)
+    window_a1, window_a2 = df_a1.iloc[start_idx:end_idx], df_a2.iloc[start_idx:end_idx]
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    fig.suptitle(f"INVALIDATED: {signal['signal_type']} - Broken at {break_ts}", fontsize=16, fontweight='bold', color='darkred')
+    
+    for ax, window_df, asset_name in [(ax1, window_a1, asset_names[0]), (ax2, window_a2, asset_names[1])]:
+        _plot_candlesticks(ax, window_df)
+        
+        # Mark signal candle
+        if signal_ts in window_df.index:
+            try:
+                sig_win_idx = window_df.index.get_loc(signal_ts)
+                sig_win_idx = sig_win_idx.start if isinstance(sig_win_idx, slice) else sig_win_idx
+                row = window_df.iloc[sig_win_idx]
+                ax.add_patch(plt.Circle((sig_win_idx, row['Close']), 0.4, color='blue', fill=False, linewidth=2))
+                ax.text(sig_win_idx, row['High'] + (row['High'] - row['Low']) * 0.1, 'SIGNAL', 
+                       fontsize=8, ha='center', color='blue', fontweight='bold')
+            except (KeyError, TypeError):
+                pass
+        
+        # Only draw invalidation level and break marker on the failing asset's chart
+        if asset_name == failing_asset:
+            # Draw invalidation level
+            ax.axhline(y=invalidation_level, color='darkred', linestyle='--', linewidth=2, 
+                      label=f"Invalidation: {invalidation_level:.2f}")
+            
+            # Mark break candle with X
+            if break_ts in window_df.index:
+                try:
+                    brk_win_idx = window_df.index.get_loc(break_ts)
+                    brk_win_idx = brk_win_idx.start if isinstance(brk_win_idx, slice) else brk_win_idx
+                    row = window_df.iloc[brk_win_idx]
+                    ax.plot(brk_win_idx, invalidation_level, marker='X', markersize=15, color='darkred', 
+                           markeredgecolor='black', markeredgewidth=2, zorder=10)
+                    ax.text(brk_win_idx, row['Low'] - (row['High'] - row['Low']) * 0.15, 'BREAK', 
+                           fontsize=9, ha='center', va='top', color='darkred', fontweight='bold')
+                except (KeyError, TypeError):
+                    pass
+        
+        ax.set_ylabel(f'{asset_name}')
+        if asset_name == failing_asset:
+            ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+    
+    ax2.set_xlabel('Time')
+    candles_held = break_idx - signal_idx
+    fig.text(0.02, 0.02, f"Original: {signal['signal_type']} | Held for {candles_held} candles | {failing_asset} broke {invalidation_level:.2f}",
+             fontsize=10, bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.5))
+    plt.tight_layout()
+    _save_or_show(fig, save_path)
+
+
 def _save_or_show(fig, save_path):
     """Save figure to path or display interactively."""
     if save_path:
@@ -375,7 +478,7 @@ if __name__ == "__main__":
     LOOKBACK_SWING, LOOKBACK_FVG = 30, 30
     VISUALIZE_SIGNALS = True
     
-    print("Loading data...")
+    print("\nLoading data...")
     try:
         df_a1, df_a2 = load_data(FILE_A1, FILE_A2)
         print(f"Loaded {len(df_a1)} candles for {ASSET_NAMES[0]}, {len(df_a2)} for {ASSET_NAMES[1]}")
