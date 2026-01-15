@@ -1,8 +1,12 @@
-"""SMT Detector Testing Script - Loads CSV data and tests SMT detector across candles."""
+"""SMT Detector Testing Script - Loads CSV data and tests SMT detector across candles.
+
+Updated to use SMTManager for lifecycle management (detector → registry → break tracker).
+"""
 
 import pandas as pd
 import smt_detector as smt
-from smt_break import SMTBreak
+from smt_manager import SMTManager
+from smt_registry import SMTRegistry
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
@@ -32,13 +36,29 @@ def load_data(file_a1: str, file_a2: str):
     return df_a1, df_a2
 
 
-def print_signal(signal: dict, candle_idx: int, total_candles: int):
-    """Pretty print a detected signal."""
+def print_signal(smt_entry: dict, candle_idx: int, total_candles: int):
+    """Pretty print a detected SMT from registry."""
+    signal = smt_entry['signal']
     print(f"\n{'='*60}")
-    print(f"SIGNAL at Candle #{candle_idx + 1}/{total_candles}: {signal['signal_type']}")
-    print(f"Time: {signal['timestamp']}" + (f" | Ref: {signal['reference_timestamp']}" if 'reference_timestamp' in signal else ""))
-    print(f"Sweep: {signal['sweeping_asset']} | Fail: {signal['failing_asset']}")
-    print(f"Ref Price: {signal['reference_price']:.2f} | Invalidation: {signal['invalidation_level']:.2f}")
+    print(f"[NEW SMT] Candle #{candle_idx + 1}/{total_candles}: {signal['signal_type']}")
+    print(f"  ID: {smt_entry['id'][:8]}...")
+    print(f"  Status: {smt_entry['status']}")
+    print(f"  Timeframe: {smt_entry['timeframe']}")
+    print(f"  Time: {signal['timestamp']}" + (f" | Ref: {signal['reference_timestamp']}" if 'reference_timestamp' in signal else ""))
+    print(f"  Sweep: {signal['sweeping_asset']} | Fail: {signal['failing_asset']}")
+    print(f"  Ref Price: {signal['reference_price']:.2f} | Invalidation: {signal['invalidation_level']:.2f}")
+
+
+def print_break(smt_entry: dict, candle_idx: int, total_candles: int):
+    """Pretty print a broken SMT from registry."""
+    signal = smt_entry['signal']
+    print(f"\n{'!'*60}")
+    print(f"[BROKEN SMT] Candle #{candle_idx + 1}/{total_candles}: {signal['signal_type']}")
+    print(f"  ID: {smt_entry['id'][:8]}...")
+    print(f"  Status: {smt_entry['status']}")
+    print(f"  Created: {smt_entry['created_ts']}")
+    print(f"  Broken: {smt_entry['broken_ts']}")
+    print(f"  Level {signal['invalidation_level']:.2f} was crossed")
 
 
 def test_smt_detector(
@@ -47,26 +67,51 @@ def test_smt_detector(
     asset_names: tuple = ("NQ", "ES"),
     lookback_swing: int = 3,
     lookback_fvg: int = 10,
+    timeframe: str = "5m",
     start_idx: int = None,
-    visualize_signals: bool = True
+    visualize_signals: bool = True,
+    enable_micro: bool = True,
+    enable_swing: bool = True,
+    enable_fvg: bool = True
 ):
-    """Test SMT detector by iterating through data candle by candle."""
+    """
+    Test SMT detector using SMTManager for lifecycle management.
+    
+    The manager handles:
+    - Detection (via smt_detector functions)
+    - Registration (via SMTRegistry)
+    - Invalidation tracking (via SMTBreak)
+    """
     min_start = max(lookback_swing, lookback_fvg) + 3
     start_idx = max(start_idx, min_start) if start_idx else min_start
     total_candles = len(df_a1)
     
-    print(f"\nSMT TEST: {asset_names[0]}/{asset_names[1]} | Candles: {start_idx+1}-{total_candles} | Lookback: swing={lookback_swing}, fvg={lookback_fvg}")
+    print(f"\n{'='*70}")
+    print(f"SMT TEST using SMTManager")
+    print(f"{'='*70}")
+    print(f"Assets: {asset_names[0]}/{asset_names[1]} | Timeframe: {timeframe}")
+    print(f"Candles: {start_idx+1}-{total_candles}")
+    print(f"Lookback: swing={lookback_swing}, fvg={lookback_fvg}")
+    print(f"Detectors: micro={enable_micro}, swing={enable_swing}, fvg={enable_fvg}")
     
-    # Counters for statistics
-    micro_count = 0
-    swing_count = 0
-    fvg_count = 0
-    invalidation_count = 0
+    # ═══════════════════════════════════════════════════════════════════
+    # Initialize SMTManager
+    # ═══════════════════════════════════════════════════════════════════
+    manager = SMTManager(
+        timeframe=timeframe,
+        asset_names=asset_names,
+        lookback_period=max(lookback_swing, lookback_fvg),
+        enable_micro=enable_micro,
+        enable_swing=enable_swing,
+        enable_fvg=enable_fvg
+    )
     
-    # SMTBreak tracker for invalidation detection
-    break_tracker = SMTBreak()
+    # Counters for visualization file naming
+    viz_counts = {'micro': 0, 'swing': 0, 'fvg': 0, 'break': 0}
     
-    # Iterate through data, testing at each candle
+    # ═══════════════════════════════════════════════════════════════════
+    # Process candles through manager
+    # ═══════════════════════════════════════════════════════════════════
     for i in range(start_idx, total_candles):
         # Get data up to current candle (inclusive)
         current_a1 = df_a1.iloc[:i+1]
@@ -74,80 +119,113 @@ def test_smt_detector(
         candle = df_a1.iloc[i]
         ts = df_a1.index[i]
         
-        # Check for invalidations on this candle
-        broken = break_tracker.update_candle(candle['High'], candle['Low'], candle['Close'], ts)
-        for b in broken:
-            invalidation_count += 1
-            print(f"\n{'!'*60}")
-            print(f"INVALIDATED at Candle #{i + 1}: {b['signal']['signal_type']}")
-            print(f"Level {b['level']:.2f} broken at price {b['price']:.2f}")
-            print(f"Original signal: {b['signal']['timestamp']}")
+        # Process through manager (handles detection + tracking + invalidation)
+        result = manager.update(
+            current_a1, current_a2,
+            high=candle['High'],
+            low=candle['Low'],
+            close=candle['Close'],
+            ts=ts
+        )
+        
+        # ───────────────────────────────────────────────────────────────
+        # Handle broken SMTs (invalidations)
+        # ───────────────────────────────────────────────────────────────
+        for smt_entry in result['broken_smts']:
+            print_break(smt_entry, i, total_candles)
+            viz_counts['break'] += 1
+            
             if visualize_signals:
+                # Build break_info dict for visualization compatibility
+                break_info = {
+                    'id': smt_entry['id'],
+                    'level': smt_entry['signal']['invalidation_level'],
+                    'ts': smt_entry['broken_ts'],
+                    'signal': smt_entry['signal']
+                }
                 try:
                     visualize_smt_break(
-                        b, df_a1, df_a2, asset_names,
+                        break_info, df_a1, df_a2, asset_names,
                         candles_before=5, candles_after=3,
-                        save_path=f"output/smt_break/smt_break_{invalidation_count}.png"
+                        save_path=f"output/smt_break/smt_break_{viz_counts['break']}.png"
                     )
                 except Exception as e:
                     print(f"Warning: Could not create break visualization: {e}")
         
-        # Test Micro SMT
-        signal = smt.check_micro_smt(current_a1, current_a2, asset_names)
-        if signal:
-            print_signal(signal, i, total_candles)
-            micro_count += 1
-            break_tracker.add(signal)
+        # ───────────────────────────────────────────────────────────────
+        # Handle new SMTs
+        # ───────────────────────────────────────────────────────────────
+        for smt_entry in result['new_smts']:
+            signal = smt_entry['signal']
+            signal_type = signal['signal_type']
+            print_signal(smt_entry, i, total_candles)
+            
             if visualize_signals:
                 try:
-                    visualize_micro_smt(
-                        signal, df_a1, df_a2, asset_names,
-                        candles_before=15, candles_after=5,
-                        save_path=f"output/micro_smt/micro_smt_signal_{micro_count}.png"
-                    )
-                except Exception as e:
-                    print(f"Warning: Could not create visualization: {e}")
-        
-        # Test Swing SMT
-        signal = smt.check_swing_smt(
-            current_a1, current_a2, lookback_swing, asset_names
-        )
-        if signal:
-            print_signal(signal, i, total_candles)
-            swing_count += 1
-            break_tracker.add(signal)
-            if visualize_signals:
-                try:
-                    visualize_swing_smt(
-                        signal, df_a1, df_a2, asset_names, lookback_swing,
-                        candles_before=15, candles_after=5,
-                        save_path=f"output/swing_smt/swing_smt_signal_{swing_count}.png"
-                    )
-                except Exception as e:
-                    print(f"Warning: Could not create visualization: {e}")
-        
-        # Test FVG SMT
-        signal = smt.check_fvg_smt(
-            current_a1, current_a2, lookback_fvg, asset_names
-        )
-        if signal:
-            print_signal(signal, i, total_candles)
-            fvg_count += 1
-            break_tracker.add(signal)
-            if visualize_signals:
-                try:
-                    visualize_fvg_smt(
-                        signal, df_a1, df_a2, asset_names, lookback_fvg,
-                        candles_before=15, candles_after=5,
-                        save_path=f"output/fvg_smt/fvg_smt_signal_{fvg_count}.png"
-                    )
+                    if 'Micro' in signal_type:
+                        viz_counts['micro'] += 1
+                        visualize_micro_smt(
+                            signal, df_a1, df_a2, asset_names,
+                            candles_before=15, candles_after=5,
+                            save_path=f"output/micro_smt/micro_smt_signal_{viz_counts['micro']}.png"
+                        )
+                    elif 'Swing' in signal_type:
+                        viz_counts['swing'] += 1
+                        visualize_swing_smt(
+                            signal, df_a1, df_a2, asset_names, lookback_swing,
+                            candles_before=15, candles_after=5,
+                            save_path=f"output/swing_smt/swing_smt_signal_{viz_counts['swing']}.png"
+                        )
+                    elif 'FVG' in signal_type:
+                        viz_counts['fvg'] += 1
+                        visualize_fvg_smt(
+                            signal, df_a1, df_a2, asset_names, lookback_fvg,
+                            candles_before=15, candles_after=5,
+                            save_path=f"output/fvg_smt/fvg_smt_signal_{viz_counts['fvg']}.png"
+                        )
                 except Exception as e:
                     print(f"Warning: Could not create visualization: {e}")
     
-    total_signals = micro_count + swing_count + fvg_count
-    print(f"\nSUMMARY: Micro={micro_count}, Swing={swing_count}, FVG={fvg_count}, Total={total_signals}")
-    print(f"INVALIDATIONS: {invalidation_count}/{total_signals} signals broken")
+    # ═══════════════════════════════════════════════════════════════════
+    # Final Summary from Registry
+    # ═══════════════════════════════════════════════════════════════════
+    print(f"\n{'='*70}")
+    print("FINAL REGISTRY STATE")
+    print(f"{'='*70}")
+    
+    all_smts = manager.get_all_smts()
+    active_smts = manager.get_active_smts()
+    broken_smts = manager.get_broken_smts()
+    
+    # Count by type
+    type_counts = {}
+    for smt_entry in all_smts.values():
+        sig_type = smt_entry['signal']['signal_type']
+        type_counts[sig_type] = type_counts.get(sig_type, 0) + 1
+    
+    print(f"\nTotal SMTs detected: {len(all_smts)}")
+    print(f"  Active: {len(active_smts)}")
+    print(f"  Broken: {len(broken_smts)}")
+    
+    print(f"\nBy Type:")
+    for sig_type, count in sorted(type_counts.items()):
+        print(f"  {sig_type}: {count}")
+    
+    print(f"\nInvalidation Rate: {len(broken_smts)}/{len(all_smts)} = {len(broken_smts)/len(all_smts)*100:.1f}%" if all_smts else "No SMTs detected")
+    
+    if active_smts:
+        print(f"\nActive SMT Details:")
+        for smt_id, smt_entry in active_smts.items():
+            signal = smt_entry['signal']
+            print(f"  - {signal['signal_type']} @ {smt_entry['created_ts']}")
+            print(f"    ID: {smt_id[:8]}... | Invalidation: {signal['invalidation_level']:.2f}")
+    
+    return manager  # Return manager for further inspection if needed
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VISUALIZATION FUNCTIONS (unchanged from original)
+# ═══════════════════════════════════════════════════════════════════════════
 
 def visualize_fvg_smt(
     signal: dict, df_a1: pd.DataFrame, df_a2: pd.DataFrame, asset_names: tuple,
@@ -475,8 +553,14 @@ if __name__ == "__main__":
     # Configuration
     FILE_A1, FILE_A2 = "NQ_5min.csv", "ES_5min.csv"
     ASSET_NAMES = ("NQ", "ES")
+    TIMEFRAME = "5m"
     LOOKBACK_SWING, LOOKBACK_FVG = 30, 30
     VISUALIZE_SIGNALS = True
+    
+    # Detector toggles
+    ENABLE_MICRO = True
+    ENABLE_SWING = True
+    ENABLE_FVG = True
     
     print("\nLoading data...")
     try:
@@ -491,4 +575,22 @@ if __name__ == "__main__":
         print(f"ERROR: {e}")
         exit(1)
     
-    test_smt_detector(df_a1, df_a2, ASSET_NAMES, LOOKBACK_SWING, LOOKBACK_FVG, visualize_signals=VISUALIZE_SIGNALS)
+    # Run test with SMTManager
+    manager = test_smt_detector(
+        df_a1, df_a2, 
+        asset_names=ASSET_NAMES,
+        lookback_swing=LOOKBACK_SWING, 
+        lookback_fvg=LOOKBACK_FVG,
+        timeframe=TIMEFRAME,
+        visualize_signals=VISUALIZE_SIGNALS,
+        enable_micro=ENABLE_MICRO,
+        enable_swing=ENABLE_SWING,
+        enable_fvg=ENABLE_FVG
+    )
+    
+    # Optional: Inspect registry directly after test
+    print(f"\n{'='*70}")
+    print("REGISTRY INSPECTION")
+    print(f"{'='*70}")
+    print(f"Registry contains {len(manager.registry)} total entries")
+    print(f"Break tracker has {len(manager.break_tracker._entries)} active levels being monitored")
