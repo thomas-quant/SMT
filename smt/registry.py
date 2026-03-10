@@ -18,6 +18,7 @@ Design:
 - Stateless regarding market data
 """
 
+import copy
 import uuid
 from typing import Any, Dict, Optional
 
@@ -83,27 +84,28 @@ class SMTRegistry:
 
     def get_active_smts(self) -> Dict[str, Dict[str, Any]]:
         """Get all SMTs with status "active"."""
-        return {
+        return copy.deepcopy({
             smt_id: smt
             for smt_id, smt in self._smts.items()
             if smt["status"] == "active"
-        }
+        })
 
     def get_all_smts(self) -> Dict[str, Dict[str, Any]]:
         """Get all SMTs regardless of status."""
-        return dict(self._smts)
+        return copy.deepcopy(self._smts)
 
     def get_smt(self, smt_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific SMT by ID."""
-        return self._smts.get(smt_id)
+        smt = self._smts.get(smt_id)
+        return copy.deepcopy(smt) if smt is not None else None
 
     def get_broken_smts(self) -> Dict[str, Dict[str, Any]]:
         """Get all SMTs with status "broken"."""
-        return {
+        return copy.deepcopy({
             smt_id: smt
             for smt_id, smt in self._smts.items()
             if smt["status"] == "broken"
-        }
+        })
 
     def get_smts_by_timeframe(self, timeframe: str) -> Dict[str, Dict[str, Any]]:
         """Get all SMTs for a specific timeframe."""

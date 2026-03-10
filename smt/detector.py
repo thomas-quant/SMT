@@ -13,6 +13,23 @@ import pandas as pd
 from typing import Optional, Dict, Any, Tuple
 
 
+REQUIRED_OHLC_COLUMNS = ("Open", "High", "Low", "Close")
+
+
+def _validate_dataframe(df: pd.DataFrame, name: str) -> None:
+    missing_columns = [column for column in REQUIRED_OHLC_COLUMNS if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"{name} must contain Open, High, Low, Close columns; missing {missing_columns}"
+        )
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(f"{name} must use a DatetimeIndex")
+
+    if not df.index.is_unique or not df.index.is_monotonic_increasing:
+        raise ValueError(f"{name} index must be unique and sorted")
+
+
 def _validate_dataframes(df_a1: pd.DataFrame, df_a2: pd.DataFrame, min_len: int = 2) -> bool:
     """
     Validate that both dataframes are properly aligned and have sufficient data.
@@ -20,12 +37,14 @@ def _validate_dataframes(df_a1: pd.DataFrame, df_a2: pd.DataFrame, min_len: int 
     Returns:
         True if valid, False otherwise
     """
+    _validate_dataframe(df_a1, "df_a1")
+    _validate_dataframe(df_a2, "df_a2")
+
+    if not df_a1.index.equals(df_a2.index):
+        raise ValueError("df_a1 and df_a2 must share the same index")
+
     # Check minimum length
     if len(df_a1) < min_len or len(df_a2) < min_len:
-        return False
-
-    # Check that current timestamps match (critical for accurate SMT detection)
-    if df_a1.index[-1] != df_a2.index[-1]:
         return False
 
     return True
@@ -119,6 +138,30 @@ def _validate_current_is_extreme(
         return current_val >= between_candles['High'].max()
 
 
+def _build_signal(
+    signal_type: str,
+    timestamp: Any,
+    sweeping_asset: str,
+    failing_asset: str,
+    reference_price: float,
+    invalidation_level: float,
+    reference_timestamp: Optional[Any] = None,
+) -> Dict[str, Any]:
+    signal = {
+        "signal_type": signal_type,
+        "timestamp": timestamp,
+        "sweeping_asset": sweeping_asset,
+        "failing_asset": failing_asset,
+        "reference_price": reference_price,
+        "invalidation_level": invalidation_level,
+        "invalidation_asset": failing_asset,
+        "invalidation_direction": "below" if signal_type.startswith("Bullish") else "above",
+    }
+    if reference_timestamp is not None:
+        signal["reference_timestamp"] = reference_timestamp
+    return signal
+
+
 def check_micro_smt(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
@@ -148,27 +191,27 @@ def check_micro_smt(
     sweeper = _check_divergence(c0_high_a1, c0_high_a2, r_high_a1, r_high_a2,
                                  is_bullish=False, allow_equal_sweep=True)
     if sweeper is not None:
-        return {
-            "signal_type": "Bearish Micro SMT",
-            "timestamp": timestamp,
-            "sweeping_asset": asset_names[sweeper],
-            "failing_asset": asset_names[1 - sweeper],
-            "reference_price": r_high_a1 if sweeper == 0 else r_high_a2,
-            "invalidation_level": r_high_a2 if sweeper == 0 else r_high_a1
-        }
+        return _build_signal(
+            signal_type="Bearish Micro SMT",
+            timestamp=timestamp,
+            sweeping_asset=asset_names[sweeper],
+            failing_asset=asset_names[1 - sweeper],
+            reference_price=r_high_a1 if sweeper == 0 else r_high_a2,
+            invalidation_level=r_high_a2 if sweeper == 0 else r_high_a1,
+        )
 
     # Check for Bullish SMT (sweeping lows)
     sweeper = _check_divergence(c0_low_a1, c0_low_a2, r_low_a1, r_low_a2,
                                  is_bullish=True, allow_equal_sweep=True)
     if sweeper is not None:
-        return {
-            "signal_type": "Bullish Micro SMT",
-            "timestamp": timestamp,
-            "sweeping_asset": asset_names[sweeper],
-            "failing_asset": asset_names[1 - sweeper],
-            "reference_price": r_low_a1 if sweeper == 0 else r_low_a2,
-            "invalidation_level": r_low_a2 if sweeper == 0 else r_low_a1
-        }
+        return _build_signal(
+            signal_type="Bullish Micro SMT",
+            timestamp=timestamp,
+            sweeping_asset=asset_names[sweeper],
+            failing_asset=asset_names[1 - sweeper],
+            reference_price=r_low_a1 if sweeper == 0 else r_low_a2,
+            invalidation_level=r_low_a2 if sweeper == 0 else r_low_a1,
+        )
 
     return None
 
@@ -300,15 +343,15 @@ def check_swing_smt(
             return None
 
         signal_type = "Bullish Swing SMT" if is_bullish else "Bearish Swing SMT"
-        return {
-            "signal_type": signal_type,
-            "timestamp": timestamp,
-            "reference_timestamp": swing_timestamp,
-            "sweeping_asset": asset_names[sweeper],
-            "failing_asset": asset_names[1 - sweeper],
-            "reference_price": ref_price_a1 if sweeper == 0 else ref_price_a2,
-            "invalidation_level": ref_price_a2 if sweeper == 0 else ref_price_a1
-        }
+        return _build_signal(
+            signal_type=signal_type,
+            timestamp=timestamp,
+            reference_timestamp=swing_timestamp,
+            sweeping_asset=asset_names[sweeper],
+            failing_asset=asset_names[1 - sweeper],
+            reference_price=ref_price_a1 if sweeper == 0 else ref_price_a2,
+            invalidation_level=ref_price_a2 if sweeper == 0 else ref_price_a1,
+        )
 
     # Check for Bullish Swing SMT (shared swing low)
     result = _check_swing_direction(
@@ -390,15 +433,16 @@ def check_fvg_smt(
         return None
 
     signal_type = f"{'Bullish' if is_bullish else 'Bearish'} FVG SMT"
-    return {
-        "signal_type": signal_type,
-        "timestamp": timestamp,
-        "reference_timestamp": fvg_a1['timestamp'],
-        "sweeping_asset": asset_names[sweeper],
-        "failing_asset": asset_names[1 - sweeper],
-        "reference_price": ref_price_a1 if sweeper == 0 else ref_price_a2,
-        "invalidation_level": ref_price_a2 if sweeper == 0 else ref_price_a1
-    }
+    reference_timestamp = fvg_a1["timestamp"] if idx_a1 <= idx_a2 else fvg_a2["timestamp"]
+    return _build_signal(
+        signal_type=signal_type,
+        timestamp=timestamp,
+        reference_timestamp=reference_timestamp,
+        sweeping_asset=asset_names[sweeper],
+        failing_asset=asset_names[1 - sweeper],
+        reference_price=ref_price_a1 if sweeper == 0 else ref_price_a2,
+        invalidation_level=ref_price_a2 if sweeper == 0 else ref_price_a1,
+    )
 
 
 def _find_recent_valid_fvg(df: pd.DataFrame, lookback: int) -> Optional[Dict[str, Any]]:
