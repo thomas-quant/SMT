@@ -6,7 +6,7 @@ Typical usage:
     from smt import SMTManager
 
     manager = SMTManager(timeframe="5m", asset_names=("ES", "NQ"))
-    result = manager.update(df_es, df_nq, high, low, close, ts)
+    result = manager.update(df_es, df_nq)
 
 For lower-level access:
 

@@ -13,7 +13,7 @@ Complete lifecycle management for SMT signals:
 ```
 detector.py  →  SMTManager.update()  →  registry.py  (status: active)
                                      →  break_tracker.py
-                                              │ level crossed?
+                                              │ invalidation asset crossed?
                                               ↓
                                          registry.py  (status: broken)
 ```
@@ -26,7 +26,7 @@ cd SMT
 
 python -m venv .venv && source .venv/bin/activate
 pip install -e .          # core (numpy, pandas)
-pip install -e ".[dev]"   # adds matplotlib
+pip install -e ".[dev]"   # adds matplotlib and pytest
 ```
 
 ### Requirements
@@ -35,6 +35,7 @@ pip install -e ".[dev]"   # adds matplotlib
 - `pandas >= 1.5`
 - `numpy >= 1.23`
 - `matplotlib` (optional, for visualization)
+- `pytest` (optional, for running the test suite)
 
 ## Project Structure
 
@@ -70,10 +71,6 @@ for i in range(start_idx, len(df_es)):
     result = manager.update(
         df_es.iloc[:i+1],
         df_nq.iloc[:i+1],
-        high=df_es.iloc[i]["High"],
-        low=df_es.iloc[i]["Low"],
-        close=df_es.iloc[i]["Close"],
-        ts=df_es.index[i],
     )
 
     for smt in result["new_smts"]:
@@ -110,8 +107,14 @@ registry.mark_broken(smt_id, broken_ts=ts)
 
 # Manual break tracking
 tracker = SMTBreak()
-tracker.add(signal, id=smt_id)
-broken_list = tracker.update_candle(high, low, close, ts)
+tracker.add(signal, entry_id=smt_id)
+broken_list = tracker.update_asset(
+    asset=signal["invalidation_asset"],
+    high=latest_high,
+    low=latest_low,
+    close=latest_close,
+    ts=latest_ts,
+)
 ```
 
 ## API Reference
@@ -131,10 +134,10 @@ SMTManager(
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `update(df_a1, df_a2, high, low, close, ts)` | `{"new_smts": [...], "broken_smts": [...]}` | Process one candle |
-| `get_active_smts()` | list | All active SMTs |
-| `get_broken_smts()` | list | All invalidated SMTs |
-| `get_all_smts()` | list | All SMTs |
+| `update(df_a1, df_a2)` | `{"new_smts": [...], "broken_smts": [...]}` | Process one aligned candle across both assets |
+| `get_active_smts()` | dict | All active SMTs keyed by UUID |
+| `get_broken_smts()` | dict | All invalidated SMTs keyed by UUID |
+| `get_all_smts()` | dict | All SMTs keyed by UUID |
 | `clear()` | — | Reset all state |
 
 ### SMTRegistry
@@ -164,6 +167,8 @@ SMTManager(
         "failing_asset": "NQ",
         "reference_price": 4500.25,
         "invalidation_level": 4501.50,
+        "invalidation_asset": "NQ",
+        "invalidation_direction": "above" | "below",
     }
 }
 ```
@@ -173,23 +178,24 @@ SMTManager(
 ```python
 check_micro_smt(df_a1, df_a2, asset_names=("A1", "A2")) -> Optional[Dict]
 check_swing_smt(df_a1, df_a2, lookback_period, asset_names, timestamp_tolerance=1) -> Optional[Dict]
-check_fvg_smt(df_a1, df_a2, lookback_period, asset_names) -> Optional[Dict]
+check_fvg_smt(df_a1, df_a2, lookback_period, asset_names, timestamp_tolerance=1) -> Optional[Dict]
 ```
 
 ### SMTBreak
 
 ```python
 tracker = SMTBreak()
-tracker.add(signal, id=optional_id)          # Register invalidation level
-tracker.update_candle(high, low, close, ts)  # Returns list of broken IDs
-tracker.remove(id)
+tracker.add(signal, entry_id=optional_id)                     # Register invalidation level
+tracker.update_asset(asset, high, low, close, ts)            # Returns list of broken entries
+tracker.remove(entry_id)
 tracker.clear()
 ```
 
 ## Data Requirements
 
 Both DataFrames must have:
-- **Index**: datetime timestamps (aligned — `df_a1.index[-1] == df_a2.index[-1]` on every call)
+- **Index**: matching `DatetimeIndex` values across both assets
+- **Index properties**: unique and sorted ascending
 - **Columns**: `Open`, `High`, `Low`, `Close`
 
 ## Design Principles
