@@ -17,7 +17,7 @@ Integration Flow (per candle update):
 │    ├─> Add to registry (assigns UUID, status="active")         │
 │    └─> Register invalidation_level with SMTBreak               │
 │                                                                 │
-│ 3. Call SMTBreak.update_candle(high, low, close, ts)           │
+│ 3. Call SMTBreak.update_asset(...) for each asset              │
 │    └─> Returns list of broken SMTs (level was crossed)         │
 │                                                                 │
 │ 4. For each broken SMT:                                        │
@@ -28,15 +28,16 @@ Usage:
     manager = SMTManager(timeframe="5m")
 
     # On each candle close:
-    result = manager.update(df_asset1, df_asset2, high, low, close, ts)
+    result = manager.update(df_asset1, df_asset2)
 
     # result contains:
     # - new_smts: list of newly detected SMTs
     # - broken_smts: list of SMTs that were invalidated this candle
 """
 
+from typing import Any, Dict, List, Tuple
+
 import pandas as pd
-from typing import Any, Dict, List, Optional, Tuple
 
 from .registry import SMTRegistry
 from .break_tracker import SMTBreak
@@ -94,10 +95,6 @@ class SMTManager:
         self,
         df_a1: pd.DataFrame,
         df_a2: pd.DataFrame,
-        high: float,
-        low: float,
-        close: float,
-        ts: Any = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Process a candle update through the complete SMT lifecycle.
@@ -107,10 +104,6 @@ class SMTManager:
         Args:
             df_a1: DataFrame for asset 1 (with current candle included)
             df_a2: DataFrame for asset 2 (with current candle included)
-            high: High price of current candle (for break detection)
-            low: Low price of current candle (for break detection)
-            close: Close price of current candle (for break detection)
-            ts: Current timestamp
 
         Returns:
             Dictionary with:
@@ -144,7 +137,18 @@ class SMTManager:
         # ═══════════════════════════════════════════════════════════════
         # STEP 3: Check for broken invalidation levels
         # ═══════════════════════════════════════════════════════════════
-        broken_list = self.break_tracker.update_candle(high, low, close, ts)
+        broken_list = []
+        for asset, df in zip(self.asset_names, (df_a1, df_a2)):
+            latest = df.iloc[-1]
+            broken_list.extend(
+                self.break_tracker.update_asset(
+                    asset=asset,
+                    high=float(latest["High"]),
+                    low=float(latest["Low"]),
+                    close=float(latest["Close"]),
+                    ts=df.index[-1],
+                )
+            )
 
         # ═══════════════════════════════════════════════════════════════
         # STEP 4: Update registry for broken SMTs
@@ -153,7 +157,7 @@ class SMTManager:
             smt_id = broken["id"]
 
             # Mark as broken in registry
-            self.registry.mark_broken(smt_id, broken_ts=ts)
+            self.registry.mark_broken(smt_id, broken_ts=broken["ts"])
 
             # Get the updated SMT entry for output
             smt_entry = self.registry.get_smt(smt_id)

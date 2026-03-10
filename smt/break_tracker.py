@@ -11,7 +11,7 @@ class SMTBreak:
 
     def __init__(self):
         self._entries: Dict[str, Dict[str, Any]] = {}
-        self.last_price: Optional[float] = None
+        self._last_prices: Dict[str, float] = {}
 
     def add(self, signal: Dict[str, Any], entry_id: Optional[str] = None) -> str:
         """Add invalidation level from an SMT detector signal."""
@@ -19,8 +19,10 @@ class SMTBreak:
             entry_id = f"{signal.get('signal_type', '')}_{signal.get('timestamp', 'unknown')}"
 
         self._entries[entry_id] = {
-            'level': float(signal['invalidation_level']),
-            'signal': signal
+            "asset": signal["invalidation_asset"],
+            "direction": signal["invalidation_direction"],
+            "level": float(signal["invalidation_level"]),
+            "signal": signal,
         }
         return entry_id
 
@@ -29,28 +31,48 @@ class SMTBreak:
 
     def clear(self) -> None:
         self._entries.clear()
-        self.last_price = None
+        self._last_prices.clear()
 
-    def update_candle(self, high: float, low: float, close: float, ts: Any = None) -> List[Dict[str, Any]]:
-        """Check for broken levels. Returns list of invalidated signals."""
-        prev = self.last_price
-        self.last_price = close
+    def update_asset(
+        self,
+        asset: str,
+        high: float,
+        low: float,
+        close: float,
+        ts: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Check whether tracked levels for one asset were invalidated."""
+        prev = self._last_prices.get(asset)
+        self._last_prices[asset] = close
 
         if prev is None:
             return []
 
         broken = []
         for sid, e in list(self._entries.items()):
-            level = e['level']
+            if e["asset"] != asset:
+                continue
 
-            # Level above prev = break up, level below prev = break down
-            crossed = (
-                (level >= prev and high >= level) or
-                (level <= prev and low <= level)
-            )
+            level = e["level"]
+            direction = e["direction"]
+            if direction == "above":
+                crossed = prev <= level <= high
+            elif direction == "below":
+                crossed = low <= level <= prev
+            else:
+                raise ValueError(f"Unsupported invalidation direction: {direction}")
 
             if crossed:
-                broken.append({'id': sid, 'level': level, 'price': close, 'ts': ts, 'signal': e['signal']})
+                broken.append(
+                    {
+                        "id": sid,
+                        "asset": asset,
+                        "level": level,
+                        "price": close,
+                        "ts": ts,
+                        "signal": e["signal"],
+                    }
+                )
                 del self._entries[sid]
 
         return broken
