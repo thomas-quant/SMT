@@ -51,6 +51,45 @@ def _scan_micro_events(
     return rows
 
 
+def _resolve_broken_ts(
+    events: pd.DataFrame,
+    df_a1: pd.DataFrame,
+    df_a2: pd.DataFrame,
+    asset_names,
+) -> pd.DataFrame:
+    if events.empty:
+        return events
+
+    asset_map = {
+        asset_names[0]: df_a1,
+        asset_names[1]: df_a2,
+    }
+
+    resolved = events.copy()
+    broken_timestamps = []
+    statuses = []
+
+    for row in resolved.itertuples(index=False):
+        asset_df = asset_map[row.invalidation_asset]
+        future = asset_df.loc[asset_df.index > row.created_ts]
+
+        if row.invalidation_direction == "above":
+            hits = future.index[future["High"] >= row.invalidation_level]
+        else:
+            hits = future.index[future["Low"] <= row.invalidation_level]
+
+        if len(hits) == 0:
+            broken_timestamps.append(pd.NaT)
+            statuses.append("active")
+        else:
+            broken_timestamps.append(hits[0])
+            statuses.append("broken")
+
+    resolved["broken_ts"] = broken_timestamps
+    resolved["status"] = statuses
+    return resolved
+
+
 def scan_smts_historical(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
@@ -69,7 +108,9 @@ def scan_smts_historical(
     if not rows:
         return _empty_events()
 
-    return pd.DataFrame(rows).sort_values(
+    events = pd.DataFrame(rows).sort_values(
         by=["created_ts", "signal_type"],
         kind="stable",
-    )[EVENT_COLUMNS].reset_index(drop=True)
+    ).reset_index(drop=True)
+
+    return _resolve_broken_ts(events, df_a1, df_a2, asset_names)[EVENT_COLUMNS]

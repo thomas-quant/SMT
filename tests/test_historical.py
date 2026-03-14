@@ -103,3 +103,37 @@ def test_scan_smts_historical_emits_micro_events_with_metadata():
     assert row["invalidation_asset"] == "NQ"
     assert row["invalidation_direction"] == "above"
     assert row["status"] == "active"
+
+
+def test_scan_smts_historical_resolves_broken_ts_from_invalidation_asset():
+    df_a1 = _build_df(
+        [
+            (95.0, 100.0, 90.0, 95.0),
+            (96.0, 101.0, 91.0, 100.0),
+            (100.0, 106.0, 99.0, 101.0),
+            (101.0, 106.2, 100.0, 102.0),
+        ]
+    )
+    df_a2 = _build_df(
+        [
+            (100.0, 105.0, 95.0, 100.0),
+            (99.0, 104.0, 96.0, 102.0),
+            (102.0, 104.5, 101.0, 103.0),
+            (103.0, 105.5, 102.0, 104.0),
+        ]
+    )
+
+    result = scan_smts_historical(
+        df_a1,
+        df_a2,
+        asset_names=("ES", "NQ"),
+        enable_micro=True,
+        enable_swing=False,
+        enable_fvg=False,
+    )
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["created_ts"] == df_a1.index[1]
+    assert row["broken_ts"] == df_a1.index[3]
+    assert row["status"] == "broken"
