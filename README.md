@@ -2,6 +2,11 @@
 
 A Python package for detecting and tracking **Smart Money Technique (SMT) Divergences** between correlated assets. SMT divergences occur when two correlated instruments (e.g. ES/NQ futures) show conflicting price action at a key level — one asset sweeps the level while the other fails to reach it.
 
+The package supports two workflows:
+
+- **Live / sequential** with `SMTManager` for candle-by-candle updates and lifecycle tracking
+- **Historical / backtesting** with `scan_smts_historical` for batch scanning full aligned datasets into an event table
+
 ## Overview
 
 Complete lifecycle management for SMT signals:
@@ -45,6 +50,7 @@ SMT/
 │   ├── __init__.py        # Public API
 │   ├── manager.py         # SMTManager — integration orchestrator
 │   ├── detector.py        # Stateless detection functions
+│   ├── historical.py      # Batch historical scanner for backtesting
 │   ├── break_tracker.py   # Invalidation level tracker
 │   └── registry.py        # SMT lifecycle / in-memory store
 ├── pyproject.toml
@@ -52,6 +58,8 @@ SMT/
 ```
 
 ## Quick Start
+
+### Live / Sequential
 
 ```python
 import pandas as pd
@@ -81,6 +89,29 @@ for i in range(start_idx, len(df_es)):
         print(f"SMT Invalidated: {smt['id']}")
 ```
 
+### Historical / Backtesting
+
+```python
+from smt import scan_smts_historical
+
+events = scan_smts_historical(
+    df_es,
+    df_nq,
+    asset_names=("ES", "NQ"),
+    lookback_period=20,
+    enable_micro=True,
+    enable_swing=True,
+    enable_fvg=True,
+)
+
+print(events[["signal_type", "created_ts", "broken_ts", "status"]])
+
+active = events[events["status"] == "active"]
+bearish_micro = events[events["signal_type"] == "Bearish Micro SMT"]
+```
+
+Use `SMTManager` when you are processing candles incrementally. Use `scan_smts_historical` when you already have full aligned history and want one event table for backtesting or research.
+
 ## Detection Types
 
 | Type | Function | Pattern |
@@ -94,7 +125,7 @@ All three functions are **stateless** — they take DataFrames and return a sign
 ## Using Individual Components
 
 ```python
-from smt import SMTManager, SMTBreak, SMTRegistry
+from smt import SMTManager, SMTBreak, SMTRegistry, scan_smts_historical
 from smt.detector import check_micro_smt, check_swing_smt, check_fvg_smt
 
 # Detection only
@@ -115,6 +146,9 @@ broken_list = tracker.update_asset(
     close=latest_close,
     ts=latest_ts,
 )
+
+# Historical batch scan
+events = scan_smts_historical(df_es, df_nq, asset_names=("ES", "NQ"))
 ```
 
 ## API Reference
@@ -139,6 +173,38 @@ SMTManager(
 | `get_broken_smts()` | dict | All invalidated SMTs keyed by UUID |
 | `get_all_smts()` | dict | All SMTs keyed by UUID |
 | `clear()` | — | Reset all state |
+
+### Historical Scanner
+
+```python
+scan_smts_historical(
+    df_a1: pd.DataFrame,
+    df_a2: pd.DataFrame,
+    asset_names: Tuple[str, str] = ("A1", "A2"),
+    lookback_period: int = 20,
+    enable_micro: bool = True,
+    enable_swing: bool = True,
+    enable_fvg: bool = True,
+) -> pd.DataFrame
+```
+
+Returns one row per SMT event with these columns:
+
+```text
+signal_type
+created_ts
+reference_timestamp
+sweeping_asset
+failing_asset
+reference_price
+invalidation_asset
+invalidation_direction
+invalidation_level
+broken_ts
+status
+```
+
+`status` is `"broken"` when price later crosses the invalidation level on the invalidation asset, otherwise `"active"`.
 
 ### SMTRegistry
 
