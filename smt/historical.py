@@ -5,7 +5,6 @@ from .detector import (
     _build_signal,
     _check_divergence,
     _validate_dataframes,
-    check_fvg_smt,
     check_micro_smt,
 )
 
@@ -248,16 +247,113 @@ def _scan_fvg_events(
     lookback_period: int,
     asset_names,
 ) -> list[dict]:
+    index = df_a1.index
+    high_a1 = df_a1["High"].to_numpy()
+    low_a1 = df_a1["Low"].to_numpy()
+    high_a2 = df_a2["High"].to_numpy()
+    low_a2 = df_a2["Low"].to_numpy()
+
+    def find_recent_valid_fvg(high: np.ndarray, low: np.ndarray, current_idx: int):
+        max_lookback = min(lookback_period, current_idx - 2)
+        for i in range(1, max_lookback + 1):
+            c1_idx = current_idx - i - 2
+            c3_idx = current_idx - i
+            candles_after_low = low[c3_idx + 1 : current_idx]
+            candles_after_high = high[c3_idx + 1 : current_idx]
+
+            c1_high = high[c1_idx]
+            c1_low = low[c1_idx]
+            c3_high = high[c3_idx]
+            c3_low = low[c3_idx]
+
+            if c1_high < c3_low:
+                original_bottom = c1_high
+                original_top = c3_low
+
+                if len(candles_after_low) > 0:
+                    if (candles_after_low < original_bottom).any():
+                        continue
+
+                    lows_in_gap = candles_after_low[candles_after_low < original_top]
+                    current_top = lows_in_gap.min() if len(lows_in_gap) > 0 else original_top
+                else:
+                    current_top = original_top
+
+                return {
+                    "type": "bullish",
+                    "bottom": original_bottom,
+                    "top": current_top,
+                    "idx": c1_idx,
+                }
+
+            if c1_low > c3_high:
+                original_bottom = c3_high
+                original_top = c1_low
+
+                if len(candles_after_high) > 0:
+                    if (candles_after_high > original_top).any():
+                        continue
+
+                    highs_in_gap = candles_after_high[candles_after_high > original_bottom]
+                    current_bottom = highs_in_gap.max() if len(highs_in_gap) > 0 else original_bottom
+                else:
+                    current_bottom = original_bottom
+
+                return {
+                    "type": "bearish",
+                    "bottom": current_bottom,
+                    "top": original_top,
+                    "idx": c1_idx,
+                }
+
+        return None
+
     rows = []
-    for end in range(lookback_period + 1, len(df_a1) + 1):
-        signal = check_fvg_smt(
-            df_a1.iloc[:end],
-            df_a2.iloc[:end],
-            lookback_period=lookback_period,
-            asset_names=asset_names,
+    for current_idx in range(lookback_period, len(df_a1)):
+        fvg_a1 = find_recent_valid_fvg(high_a1, low_a1, current_idx)
+        fvg_a2 = find_recent_valid_fvg(high_a2, low_a2, current_idx)
+
+        if fvg_a1 is None or fvg_a2 is None or fvg_a1["type"] != fvg_a2["type"]:
+            continue
+
+        if abs(fvg_a1["idx"] - fvg_a2["idx"]) > 1:
+            continue
+
+        is_bullish = fvg_a1["type"] == "bullish"
+        if is_bullish:
+            ref_price_a1 = fvg_a1["top"]
+            ref_price_a2 = fvg_a2["top"]
+            current_value_a1 = low_a1[current_idx]
+            current_value_a2 = low_a2[current_idx]
+        else:
+            ref_price_a1 = fvg_a1["bottom"]
+            ref_price_a2 = fvg_a2["bottom"]
+            current_value_a1 = high_a1[current_idx]
+            current_value_a2 = high_a2[current_idx]
+
+        sweeper = _check_divergence(
+            current_value_a1,
+            current_value_a2,
+            ref_price_a1,
+            ref_price_a2,
+            is_bullish,
         )
-        if signal is not None:
-            rows.append(_event_row(signal))
+        if sweeper is None:
+            continue
+
+        reference_timestamp = (
+            index[fvg_a1["idx"]] if fvg_a1["idx"] <= fvg_a2["idx"] else index[fvg_a2["idx"]]
+        )
+        signal = _build_signal(
+            signal_type=f"{'Bullish' if is_bullish else 'Bearish'} FVG SMT",
+            timestamp=index[current_idx],
+            sweeping_asset=asset_names[sweeper],
+            failing_asset=asset_names[1 - sweeper],
+            reference_price=ref_price_a1 if sweeper == 0 else ref_price_a2,
+            invalidation_level=ref_price_a2 if sweeper == 0 else ref_price_a1,
+            reference_timestamp=reference_timestamp,
+        )
+        rows.append(_event_row(signal))
     return rows
 
 
