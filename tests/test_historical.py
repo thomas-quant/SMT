@@ -414,3 +414,43 @@ def test_historical_fvg_matches_detector_oracle():
         expected.reset_index(drop=True),
         check_dtype=False,
     )
+
+
+def test_historical_scanner_matches_combined_detector_oracle():
+    df_a1 = _build_walk_df(seed=5, n=60, jump_every=7, jump_size=2.5)
+    df_a2 = _build_walk_df(seed=6, n=60, jump_every=7, jump_size=2.5)
+
+    expected_swing = _expected_historical_events_from_detector(
+        df_a1,
+        df_a2,
+        check_swing_smt,
+        lookback_period=20,
+        asset_names=("ES", "NQ"),
+    )
+    expected_fvg = _expected_historical_events_from_detector(
+        df_a1,
+        df_a2,
+        check_fvg_smt,
+        lookback_period=20,
+        asset_names=("ES", "NQ"),
+    )
+    expected = pd.concat([expected_swing, expected_fvg], ignore_index=True).sort_values(
+        by=["created_ts", "signal_type"],
+        kind="stable",
+    ).reset_index(drop=True)
+    actual = scan_smts_historical(
+        df_a1,
+        df_a2,
+        asset_names=("ES", "NQ"),
+        lookback_period=20,
+        enable_micro=False,
+        enable_swing=True,
+        enable_fvg=True,
+    )
+
+    assert not expected.empty
+    assert_frame_equal(
+        actual.reset_index(drop=True),
+        expected.reset_index(drop=True),
+        check_dtype=False,
+    )
