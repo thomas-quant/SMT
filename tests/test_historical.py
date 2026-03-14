@@ -1,7 +1,25 @@
+import numpy as np
 import pandas as pd
 import pytest
+from pandas.testing import assert_frame_equal
 
 from smt import scan_smts_historical
+from smt.detector import check_fvg_smt, check_swing_smt
+
+
+HISTORICAL_EVENT_COLUMNS = [
+    "signal_type",
+    "created_ts",
+    "reference_timestamp",
+    "sweeping_asset",
+    "failing_asset",
+    "reference_price",
+    "invalidation_asset",
+    "invalidation_direction",
+    "invalidation_level",
+    "broken_ts",
+    "status",
+]
 
 
 def _build_df(rows, index=None):
@@ -17,6 +35,107 @@ def _build_df(rows, index=None):
             ]
         )[: len(rows)]
     return pd.DataFrame(rows, index=index, columns=["Open", "High", "Low", "Close"])
+
+
+def _build_walk_df(seed, n=60, jump_every=None, jump_size=3.0):
+    rng = np.random.default_rng(seed)
+    index = pd.date_range("2024-01-01 09:30:00", periods=n, freq="5min")
+    close = 100 + np.cumsum(rng.normal(0.0, 0.6, n))
+
+    if jump_every is not None:
+        for i in range(jump_every, n, jump_every):
+            close[i:] += jump_size if (i // jump_every) % 2 else -jump_size
+
+    open_ = np.r_[close[0], close[:-1]]
+    spread = rng.uniform(0.15, 0.75, n)
+    high = np.maximum(open_, close) + spread
+    low = np.minimum(open_, close) - spread
+    return pd.DataFrame(
+        {
+            "Open": open_,
+            "High": high,
+            "Low": low,
+            "Close": close,
+        },
+        index=index,
+    )
+
+
+def _resolve_expected_events(events, df_a1, df_a2, asset_names):
+    if events.empty:
+        return events
+
+    asset_map = {
+        asset_names[0]: df_a1,
+        asset_names[1]: df_a2,
+    }
+    resolved = events.copy()
+    broken_ts = []
+    status = []
+
+    for row in resolved.itertuples(index=False):
+        asset_df = asset_map[row.invalidation_asset]
+        future = asset_df.loc[asset_df.index > row.created_ts]
+
+        if row.invalidation_direction == "above":
+            hits = future.index[future["High"] >= row.invalidation_level]
+        else:
+            hits = future.index[future["Low"] <= row.invalidation_level]
+
+        if len(hits) == 0:
+            broken_ts.append(pd.NaT)
+            status.append("active")
+        else:
+            broken_ts.append(hits[0])
+            status.append("broken")
+
+    resolved["broken_ts"] = broken_ts
+    resolved["status"] = status
+    return resolved[HISTORICAL_EVENT_COLUMNS]
+
+
+def _expected_historical_events_from_detector(
+    df_a1,
+    df_a2,
+    detector_fn,
+    *,
+    lookback_period,
+    asset_names,
+):
+    rows = []
+    for end in range(lookback_period + 1, len(df_a1) + 1):
+        signal = detector_fn(
+            df_a1.iloc[:end],
+            df_a2.iloc[:end],
+            lookback_period=lookback_period,
+            asset_names=asset_names,
+        )
+        if signal is None:
+            continue
+        rows.append(
+            {
+                "signal_type": signal["signal_type"],
+                "created_ts": signal["timestamp"],
+                "reference_timestamp": signal.get("reference_timestamp", pd.NaT),
+                "sweeping_asset": signal["sweeping_asset"],
+                "failing_asset": signal["failing_asset"],
+                "reference_price": signal["reference_price"],
+                "invalidation_asset": signal["invalidation_asset"],
+                "invalidation_direction": signal["invalidation_direction"],
+                "invalidation_level": signal["invalidation_level"],
+                "broken_ts": pd.NaT,
+                "status": "active",
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=HISTORICAL_EVENT_COLUMNS)
+
+    events = pd.DataFrame(rows).sort_values(
+        by=["created_ts", "signal_type"],
+        kind="stable",
+    ).reset_index(drop=True)
+    return _resolve_expected_events(events, df_a1, df_a2, asset_names)
 
 
 def test_scan_smts_historical_returns_empty_dataframe_with_expected_columns():
@@ -237,3 +356,61 @@ def test_scan_smts_historical_honors_detector_toggles():
     )
 
     assert result.empty
+
+
+def test_historical_swing_matches_detector_oracle():
+    df_a1 = _build_walk_df(seed=1, n=60)
+    df_a2 = _build_walk_df(seed=2, n=60)
+
+    expected = _expected_historical_events_from_detector(
+        df_a1,
+        df_a2,
+        check_swing_smt,
+        lookback_period=20,
+        asset_names=("ES", "NQ"),
+    )
+    actual = scan_smts_historical(
+        df_a1,
+        df_a2,
+        asset_names=("ES", "NQ"),
+        lookback_period=20,
+        enable_micro=False,
+        enable_swing=True,
+        enable_fvg=False,
+    )
+
+    assert not expected.empty
+    assert_frame_equal(
+        actual.reset_index(drop=True),
+        expected.reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_historical_fvg_matches_detector_oracle():
+    df_a1 = _build_walk_df(seed=3, n=60, jump_every=7, jump_size=2.5)
+    df_a2 = _build_walk_df(seed=4, n=60, jump_every=7, jump_size=2.5)
+
+    expected = _expected_historical_events_from_detector(
+        df_a1,
+        df_a2,
+        check_fvg_smt,
+        lookback_period=20,
+        asset_names=("ES", "NQ"),
+    )
+    actual = scan_smts_historical(
+        df_a1,
+        df_a2,
+        asset_names=("ES", "NQ"),
+        lookback_period=20,
+        enable_micro=False,
+        enable_swing=False,
+        enable_fvg=True,
+    )
+
+    assert not expected.empty
+    assert_frame_equal(
+        actual.reset_index(drop=True),
+        expected.reset_index(drop=True),
+        check_dtype=False,
+    )
