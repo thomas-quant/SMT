@@ -15,6 +15,7 @@ For lower-level access:
 """
 
 from .detector import check_micro_smt, check_swing_smt, check_fvg_smt
+from .historical import scan_smts_historical
 from .manager import SMTManager
 from .registry import SMTRegistry
 from .break_tracker import SMTBreak
@@ -26,4 +27,5 @@ __all__ = [
     "check_micro_smt",
     "check_swing_smt",
     "check_fvg_smt",
+    "scan_smts_historical",
 ]
