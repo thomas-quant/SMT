@@ -66,3 +66,40 @@ def test_scan_smts_historical_reuses_detector_validation_rules():
 
     with pytest.raises(ValueError, match="Open, High, Low, Close"):
         scan_smts_historical(invalid, valid)
+
+
+def test_scan_smts_historical_emits_micro_events_with_metadata():
+    df_a1 = _build_df(
+        [
+            (95.0, 100.0, 90.0, 95.0),
+            (96.0, 101.0, 91.0, 100.0),
+            (100.0, 100.5, 91.2, 100.5),
+        ]
+    )
+    df_a2 = _build_df(
+        [
+            (100.0, 105.0, 95.0, 100.0),
+            (99.0, 104.0, 96.0, 102.0),
+            (101.0, 103.5, 96.5, 102.0),
+        ]
+    )
+
+    result = scan_smts_historical(
+        df_a1,
+        df_a2,
+        asset_names=("ES", "NQ"),
+        enable_micro=True,
+        enable_swing=False,
+        enable_fvg=False,
+    )
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["signal_type"] == "Bearish Micro SMT"
+    assert row["created_ts"] == df_a1.index[1]
+    assert pd.isna(row["reference_timestamp"])
+    assert row["sweeping_asset"] == "ES"
+    assert row["failing_asset"] == "NQ"
+    assert row["invalidation_asset"] == "NQ"
+    assert row["invalidation_direction"] == "above"
+    assert row["status"] == "active"
