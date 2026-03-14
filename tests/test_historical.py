@@ -176,3 +176,64 @@ def test_scan_smts_historical_emits_swing_events():
     assert row["signal_type"] == "Bullish Swing SMT"
     assert row["created_ts"] == df_a1.index[4]
     assert row["reference_timestamp"] == df_a1.index[1]
+
+
+def test_scan_smts_historical_emits_fvg_events():
+    df_a1 = _build_df(
+        [
+            (8.0, 9.0, 7.0, 8.0),
+            (9.0, 10.0, 9.0, 9.5),
+            (14.0, 15.0, 13.0, 14.0),
+            (12.5, 13.0, 12.0, 12.8),
+            (12.7, 13.0, 12.5, 12.6),
+        ]
+    )
+    df_a2 = _build_df(
+        [
+            (19.0, 20.0, 19.0, 19.5),
+            (22.5, 23.0, 22.0, 22.6),
+            (22.8, 23.0, 22.5, 22.9),
+            (23.5, 24.0, 23.0, 23.5),
+            (22.5, 23.0, 22.0, 22.4),
+        ]
+    )
+
+    result = scan_smts_historical(
+        df_a1,
+        df_a2,
+        lookback_period=4,
+        asset_names=("ES", "NQ"),
+        enable_micro=False,
+        enable_swing=False,
+        enable_fvg=True,
+    )
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["signal_type"] == "Bullish FVG SMT"
+    assert row["reference_timestamp"] == df_a2.index[0]
+
+
+def test_scan_smts_historical_honors_detector_toggles():
+    df_a1 = _build_df(
+        [
+            (95.0, 100.0, 90.0, 95.0),
+            (96.0, 101.0, 91.0, 100.0),
+        ]
+    )
+    df_a2 = _build_df(
+        [
+            (100.0, 105.0, 95.0, 100.0),
+            (99.0, 104.0, 96.0, 102.0),
+        ]
+    )
+
+    result = scan_smts_historical(
+        df_a1,
+        df_a2,
+        enable_micro=False,
+        enable_swing=False,
+        enable_fvg=False,
+    )
+
+    assert result.empty
