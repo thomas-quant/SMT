@@ -1,6 +1,6 @@
 import pandas as pd
 
-from .detector import _validate_dataframes, check_micro_smt
+from .detector import _validate_dataframes, check_micro_smt, check_swing_smt
 
 
 EVENT_COLUMNS = [
@@ -90,6 +90,25 @@ def _resolve_broken_ts(
     return resolved
 
 
+def _scan_swing_events(
+    df_a1: pd.DataFrame,
+    df_a2: pd.DataFrame,
+    lookback_period: int,
+    asset_names,
+) -> list[dict]:
+    rows = []
+    for end in range(lookback_period + 1, len(df_a1) + 1):
+        signal = check_swing_smt(
+            df_a1.iloc[:end],
+            df_a2.iloc[:end],
+            lookback_period=lookback_period,
+            asset_names=asset_names,
+        )
+        if signal is not None:
+            rows.append(_event_row(signal))
+    return rows
+
+
 def scan_smts_historical(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
@@ -104,6 +123,8 @@ def scan_smts_historical(
     rows = []
     if enable_micro:
         rows.extend(_scan_micro_events(df_a1, df_a2, asset_names))
+    if enable_swing:
+        rows.extend(_scan_swing_events(df_a1, df_a2, lookback_period, asset_names))
 
     if not rows:
         return _empty_events()
