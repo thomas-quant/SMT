@@ -33,3 +33,23 @@ def test_registry_read_methods_return_copies():
     assert stored["signal"]["signal_type"] == "Bearish Micro SMT"
     assert stored["signal"]["invalidation_level"] == 105.0
     assert active == {}
+
+
+def test_registry_timeframe_filter_returns_copies():
+    registry = SMTRegistry()
+    signal = {
+        "signal_type": "Bearish Micro SMT",
+        "timestamp": "2024-01-01 09:35:00",
+        "sweeping_asset": "ES",
+        "failing_asset": "NQ",
+        "reference_price": 100.0,
+        "invalidation_level": 105.0,
+        "invalidation_asset": "NQ",
+        "invalidation_direction": "above",
+    }
+
+    smt_id = registry.add_smt(signal, timeframe="5m")
+    filtered = registry.get_smts_by_timeframe("5m")
+    filtered[smt_id]["signal"]["signal_type"] = "mutated"
+
+    assert registry.get_smt(smt_id)["signal"]["signal_type"] == "Bearish Micro SMT"

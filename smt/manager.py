@@ -1,47 +1,12 @@
-# manager.py
-"""
-SMT Manager - Glue code orchestrating detector, registry, and break tracker.
-
-This module demonstrates the complete SMT lifecycle:
-1. Detection: detector emits signals
-2. Registration: signals are stored in registry
-3. Tracking: invalidation levels are monitored by break_tracker
-4. Invalidation: broken SMTs are marked in registry
-
-Integration Flow (per candle update):
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. Call detector(s) with latest candle data                    │
-│    └─> May return zero or more SMT signals                     │
-│                                                                 │
-│ 2. For each new SMT signal:                                    │
-│    ├─> Add to registry (assigns UUID, status="active")         │
-│    └─> Register invalidation_level with SMTBreak               │
-│                                                                 │
-│ 3. Call SMTBreak.update_asset(...) for each asset              │
-│    └─> Returns list of broken SMTs (level was crossed)         │
-│                                                                 │
-│ 4. For each broken SMT:                                        │
-│    └─> Update registry status to "broken"                      │
-└─────────────────────────────────────────────────────────────────┘
-
-Usage:
-    manager = SMTManager(timeframe="5m")
-
-    # On each candle close:
-    result = manager.update(df_asset1, df_asset2)
-
-    # result contains:
-    # - new_smts: list of newly detected SMTs
-    # - broken_smts: list of SMTs that were invalidated this candle
-"""
+"""Live SMT lifecycle orchestration."""
 
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
-from .registry import SMTRegistry
 from .break_tracker import SMTBreak
 from .detector import check_micro_smt, check_swing_smt, check_fvg_smt
+from .registry import SMTRegistry
 
 
 class SMTManager:
@@ -65,29 +30,16 @@ class SMTManager:
         lookback_period: int = 20,
         enable_micro: bool = True,
         enable_swing: bool = True,
-        enable_fvg: bool = True
+        enable_fvg: bool = True,
     ):
-        """
-        Initialize the SMT Manager.
-
-        Args:
-            timeframe: Chart timeframe string (e.g., "1m", "5m", "1h")
-            asset_names: Tuple of asset names for detector output
-            lookback_period: Lookback period for swing/FVG detection
-            enable_micro: Enable micro SMT detection
-            enable_swing: Enable swing SMT detection
-            enable_fvg: Enable FVG SMT detection
-        """
         self.timeframe = timeframe
         self.asset_names = asset_names
         self.lookback_period = lookback_period
 
-        # Detection flags
         self.enable_micro = enable_micro
         self.enable_swing = enable_swing
         self.enable_fvg = enable_fvg
 
-        # Core components
         self.registry = SMTRegistry()
         self.break_tracker = SMTBreak()
 
@@ -110,33 +62,17 @@ class SMTManager:
             - "new_smts": List of newly detected SMT entries
             - "broken_smts": List of SMTs invalidated this candle
         """
-        result = {
-            "new_smts": [],
-            "broken_smts": []
-        }
+        result = {"new_smts": [], "broken_smts": []}
 
-        # ═══════════════════════════════════════════════════════════════
-        # STEP 1: Run detectors to find new SMT signals
-        # ═══════════════════════════════════════════════════════════════
         new_signals = self._run_detectors(df_a1, df_a2)
 
-        # ═══════════════════════════════════════════════════════════════
-        # STEP 2: Register new SMTs and set up break tracking
-        # ═══════════════════════════════════════════════════════════════
         for signal in new_signals:
-            # Add to registry (assigns UUID, status="active")
             smt_id = self.registry.add_smt(signal, self.timeframe)
-
-            # Register invalidation level with break tracker using the registry ID
             self.break_tracker.add(signal, entry_id=smt_id)
 
-            # Get the full SMT entry for output
             smt_entry = self.registry.get_smt(smt_id)
             result["new_smts"].append(smt_entry)
 
-        # ═══════════════════════════════════════════════════════════════
-        # STEP 3: Check for broken invalidation levels
-        # ═══════════════════════════════════════════════════════════════
         broken_list = []
         for asset, df in zip(self.asset_names, (df_a1, df_a2)):
             latest = df.iloc[-1]
@@ -150,16 +86,10 @@ class SMTManager:
                 )
             )
 
-        # ═══════════════════════════════════════════════════════════════
-        # STEP 4: Update registry for broken SMTs
-        # ═══════════════════════════════════════════════════════════════
         for broken in broken_list:
             smt_id = broken["id"]
-
-            # Mark as broken in registry
             self.registry.mark_broken(smt_id, broken_ts=broken["ts"])
 
-            # Get the updated SMT entry for output
             smt_entry = self.registry.get_smt(smt_id)
             if smt_entry:
                 result["broken_smts"].append(smt_entry)
@@ -169,42 +99,37 @@ class SMTManager:
     def _run_detectors(
         self,
         df_a1: pd.DataFrame,
-        df_a2: pd.DataFrame
+        df_a2: pd.DataFrame,
     ) -> List[Dict[str, Any]]:
         """Run enabled detectors and collect signals."""
         signals = []
 
-        # Micro SMT (2-candle pattern)
         if self.enable_micro:
             signal = check_micro_smt(df_a1, df_a2, self.asset_names)
             if signal:
                 signals.append(signal)
 
-        # Swing SMT (swing point divergence)
         if self.enable_swing:
             signal = check_swing_smt(
-                df_a1, df_a2,
+                df_a1,
+                df_a2,
                 self.lookback_period,
-                self.asset_names
+                self.asset_names,
             )
             if signal:
                 signals.append(signal)
 
-        # FVG SMT (fair value gap divergence)
         if self.enable_fvg:
             signal = check_fvg_smt(
-                df_a1, df_a2,
+                df_a1,
+                df_a2,
                 self.lookback_period,
-                self.asset_names
+                self.asset_names,
             )
             if signal:
                 signals.append(signal)
 
         return signals
-
-    # ═══════════════════════════════════════════════════════════════════
-    # Registry passthrough methods for convenience
-    # ═══════════════════════════════════════════════════════════════════
 
     def get_active_smts(self) -> Dict[str, Dict[str, Any]]:
         """Get all active SMTs from registry."""
