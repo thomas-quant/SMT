@@ -1,22 +1,4 @@
-# registry.py
-"""
-SMT Registry - Manages lifecycle of SMT signals.
-
-This module provides a single source of truth for SMT state management.
-It tracks SMTs from creation (active) through invalidation (broken).
-
-Responsibilities:
-- Assign unique IDs to each SMT
-- Store SMT metadata from smt_detector
-- Track SMT state transitions (active → broken)
-- Provide query interface for active/all SMTs
-
-Design:
-- In-memory only (no persistence)
-- No scoring, weighting, or ranking logic
-- No price logic (reacts to events only)
-- Stateless regarding market data
-"""
+"""In-memory SMT signal lifecycle registry."""
 
 import copy
 import uuid
@@ -40,16 +22,7 @@ class SMTRegistry:
         self._smts: Dict[str, Dict[str, Any]] = {}
 
     def add_smt(self, signal: Dict[str, Any], timeframe: str) -> str:
-        """
-        Register a new SMT signal from the detector.
-
-        Args:
-            signal: Raw output from smt_detector (must contain 'timestamp')
-            timeframe: Chart timeframe string (e.g., "1m", "5m", "1h")
-
-        Returns:
-            Unique SMT ID (UUID string)
-        """
+        """Register a detector signal and return its UUID."""
         smt_id = str(uuid.uuid4())
 
         self._smts[smt_id] = {
@@ -58,7 +31,7 @@ class SMTRegistry:
             "timeframe": timeframe,
             "created_ts": signal.get("timestamp"),
             "broken_ts": None,
-            "signal": signal
+            "signal": signal,
         }
 
         return smt_id
@@ -109,11 +82,11 @@ class SMTRegistry:
 
     def get_smts_by_timeframe(self, timeframe: str) -> Dict[str, Dict[str, Any]]:
         """Get all SMTs for a specific timeframe."""
-        return {
+        return copy.deepcopy({
             smt_id: smt
             for smt_id, smt in self._smts.items()
             if smt["timeframe"] == timeframe
-        }
+        })
 
     def clear(self) -> None:
         """Clear all SMTs from the registry."""

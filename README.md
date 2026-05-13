@@ -1,27 +1,20 @@
 # SMT Divergence Toolkit
 
-A Python package for detecting and tracking **Smart Money Technique (SMT) Divergences** between correlated assets. SMT divergences occur when two correlated instruments (e.g. ES/NQ futures) show conflicting price action at a key level — one asset sweeps the level while the other fails to reach it.
+Python toolkit for detecting **Smart Money Technique (SMT) divergence**
+between two correlated assets, such as ES/NQ futures. It supports
+candle-by-candle signal tracking plus vectorized historical scans for research
+and backtesting.
 
-The package supports two workflows:
+SMT divergence occurs when one asset sweeps a reference high/low or
+fair-value-gap level while the paired asset fails to confirm the move.
 
-- **Live / sequential** with `SMTManager` for candle-by-candle updates and lifecycle tracking
-- **Historical / backtesting** with `scan_smts_historical` for batch scanning full aligned datasets into an event table
+## Features
 
-## Overview
-
-Complete lifecycle management for SMT signals:
-
-1. **Detection** — Identify divergence patterns in real-time
-2. **Registration** — Track signals with unique IDs and metadata
-3. **Invalidation** — Monitor when signals are broken by price action
-
-```
-detector.py  →  SMTManager.update()  →  registry.py  (status: active)
-                                     →  break_tracker.py
-                                              │ invalidation asset crossed?
-                                              ↓
-                                         registry.py  (status: broken)
-```
+- Detects micro, swing, and fair-value-gap (FVG) SMT setups.
+- Tracks live signals from creation to invalidation with `SMTManager`.
+- Scans aligned historical OHLC data into a backtest-ready event table.
+- Keeps detector functions stateless for direct research use.
+- Validates OHLC columns, datetime indexes, sorted unique indexes, and paired-asset alignment.
 
 ## Installation
 
@@ -29,40 +22,30 @@ detector.py  →  SMTManager.update()  →  registry.py  (status: active)
 git clone https://github.com/thomas-quant/SMT.git
 cd SMT
 
-python -m venv .venv && source .venv/bin/activate
-pip install -e .          # core (numpy, pandas)
-pip install -e ".[dev]"   # adds matplotlib and pytest
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+pip install -e ".[dev]"  # pytest + matplotlib
 ```
 
-### Requirements
+Requirements: Python 3.9+, pandas 1.5+, numpy 1.23+.
 
-- Python >= 3.9
-- `pandas >= 1.5`
-- `numpy >= 1.23`
-- `matplotlib` (optional, for visualization)
-- `pytest` (optional, for running the test suite)
+## Data Requirements
 
-## Project Structure
+Both input DataFrames must:
 
-```
-SMT/
-├── smt/
-│   ├── __init__.py        # Public API
-│   ├── manager.py         # SMTManager — integration orchestrator
-│   ├── detector.py        # Stateless detection functions
-│   ├── historical.py      # Batch historical scanner for backtesting
-│   ├── break_tracker.py   # Invalidation level tracker
-│   └── registry.py        # SMT lifecycle / in-memory store
-├── pyproject.toml
-└── README.md
-```
+- use a sorted, unique `DatetimeIndex`;
+- share the same index;
+- include `Open`, `High`, `Low`, and `Close` columns.
 
 ## Quick Start
 
-### Live / Sequential
+### Live / Sequential Processing
+
+Use `SMTManager` when candles arrive incrementally.
 
 ```python
-import pandas as pd
 from smt import SMTManager
 
 manager = SMTManager(
@@ -74,22 +57,24 @@ manager = SMTManager(
     enable_fvg=True,
 )
 
-# Call on every candle close — DataFrames must share a datetime index
-for i in range(start_idx, len(df_es)):
-    result = manager.update(
-        df_es.iloc[:i+1],
-        df_nq.iloc[:i+1],
-    )
+for end in range(2, len(df_es) + 1):
+    result = manager.update(df_es.iloc[:end], df_nq.iloc[:end])
 
     for smt in result["new_smts"]:
-        print(f"New SMT: {smt['signal']['signal_type']}")
-        print(f"  Invalidation: {smt['signal']['invalidation_level']}")
+        signal = smt["signal"]
+        print(f"New {signal['signal_type']} on {signal['timestamp']}")
+        print(
+            f"Invalidation: {signal['invalidation_asset']} "
+            f"{signal['invalidation_direction']} {signal['invalidation_level']}"
+        )
 
     for smt in result["broken_smts"]:
-        print(f"SMT Invalidated: {smt['id']}")
+        print(f"Broken SMT: {smt['id']} at {smt['broken_ts']}")
 ```
 
 ### Historical / Backtesting
+
+Use `scan_smts_historical` when full aligned history is already available.
 
 ```python
 from smt import scan_smts_historical
@@ -104,91 +89,23 @@ events = scan_smts_historical(
     enable_fvg=True,
 )
 
-print(events[["signal_type", "created_ts", "broken_ts", "status"]])
-
 active = events[events["status"] == "active"]
-bearish_micro = events[events["signal_type"] == "Bearish Micro SMT"]
+broken = events[events["status"] == "broken"]
 ```
-
-Use `SMTManager` when you are processing candles incrementally. Use `scan_smts_historical` when you already have full aligned history and want one event table for backtesting or research.
 
 ## Detection Types
 
 | Type | Function | Pattern |
-|------|----------|---------|
-| **Micro** | `check_micro_smt` | Current candle sweeps previous candle's H/L; other asset doesn't |
-| **Swing** | `check_swing_smt` | Sweeps a recent swing high/low; other asset holds its swing |
-| **FVG** | `check_fvg_smt` | Enters an FVG zone on one asset; other asset fails to reach its FVG |
+| --- | --- | --- |
+| Micro | `check_micro_smt` | Sweeps previous candle high/low. |
+| Swing | `check_swing_smt` | Sweeps recent swing high/low. |
+| FVG | `check_fvg_smt` | Enters one FVG while pair fails. |
 
-All three functions are **stateless** — they take DataFrames and return a signal dict or `None`.
+Detector functions return a signal `dict` or `None`.
 
-## Using Individual Components
+## Event Output
 
-```python
-from smt import SMTManager, SMTBreak, SMTRegistry, scan_smts_historical
-from smt.detector import check_micro_smt, check_swing_smt, check_fvg_smt
-
-# Detection only
-signal = check_micro_smt(df_es, df_nq, asset_names=("ES", "NQ"))
-
-# Manual registry
-registry = SMTRegistry()
-smt_id = registry.add_smt(signal, timeframe="5m")
-registry.mark_broken(smt_id, broken_ts=ts)
-
-# Manual break tracking
-tracker = SMTBreak()
-tracker.add(signal, entry_id=smt_id)
-broken_list = tracker.update_asset(
-    asset=signal["invalidation_asset"],
-    high=latest_high,
-    low=latest_low,
-    close=latest_close,
-    ts=latest_ts,
-)
-
-# Historical batch scan
-events = scan_smts_historical(df_es, df_nq, asset_names=("ES", "NQ"))
-```
-
-## API Reference
-
-### SMTManager
-
-```python
-SMTManager(
-    timeframe: str,                    # e.g. "1m", "5m", "1h"
-    asset_names: Tuple[str, str] = ("A1", "A2"),
-    lookback_period: int = 20,
-    enable_micro: bool = True,
-    enable_swing: bool = True,
-    enable_fvg: bool = True,
-)
-```
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `update(df_a1, df_a2)` | `{"new_smts": [...], "broken_smts": [...]}` | Process one aligned candle across both assets |
-| `get_active_smts()` | dict | All active SMTs keyed by UUID |
-| `get_broken_smts()` | dict | All invalidated SMTs keyed by UUID |
-| `get_all_smts()` | dict | All SMTs keyed by UUID |
-| `clear()` | — | Reset all state |
-
-### Historical Scanner
-
-```python
-scan_smts_historical(
-    df_a1: pd.DataFrame,
-    df_a2: pd.DataFrame,
-    asset_names: Tuple[str, str] = ("A1", "A2"),
-    lookback_period: int = 20,
-    enable_micro: bool = True,
-    enable_swing: bool = True,
-    enable_fvg: bool = True,
-) -> pd.DataFrame
-```
-
-Returns one row per SMT event with these columns:
+`scan_smts_historical` returns one row per event:
 
 ```text
 signal_type
@@ -204,73 +121,67 @@ broken_ts
 status
 ```
 
-`status` is `"broken"` when price later crosses the invalidation level on the invalidation asset, otherwise `"active"`.
+`status` is `broken` when a later candle crosses the invalidation level on
+`invalidation_asset`; otherwise it remains `active`.
 
-### SMTRegistry
+## Public API
+
+```python
+from smt import (
+    SMTBreak,
+    SMTManager,
+    SMTRegistry,
+    check_fvg_smt,
+    check_micro_smt,
+    check_swing_smt,
+    scan_smts_historical,
+)
+```
+
+### `SMTManager`
+
+```python
+SMTManager(
+    timeframe: str,
+    asset_names: tuple[str, str] = ("A1", "A2"),
+    lookback_period: int = 20,
+    enable_micro: bool = True,
+    enable_swing: bool = True,
+    enable_fvg: bool = True,
+)
+```
 
 | Method | Description |
-|--------|-------------|
-| `add_smt(signal, timeframe)` | Register a new SMT, returns UUID |
-| `mark_broken(smt_id, broken_ts)` | Mark as invalidated |
-| `get_smt(smt_id)` | Fetch by ID |
-| `get_active_smts()` | Filter by status |
-| `get_broken_smts()` | Filter by status |
-| `get_smts_by_timeframe(tf)` | Filter by timeframe |
+| --- | --- |
+| `update(df_a1, df_a2)` | Detect new SMTs and mark invalidated active SMTs. |
+| `get_active_smts()` | Return active SMTs keyed by UUID. |
+| `get_broken_smts()` | Return invalidated SMTs keyed by UUID. |
+| `get_all_smts()` | Return all tracked SMTs keyed by UUID. |
+| `clear()` | Reset registry and invalidation tracker. |
 
-### SMT Entry Shape
+## Project Layout
 
-```python
-{
-    "id": "uuid-string",
-    "status": "active" | "broken",
-    "timeframe": "5m",
-    "created_ts": Timestamp,
-    "broken_ts": Timestamp | None,
-    "signal": {
-        "signal_type": "Bullish Micro SMT",
-        "timestamp": Timestamp,
-        "sweeping_asset": "ES",
-        "failing_asset": "NQ",
-        "reference_price": 4500.25,
-        "invalidation_level": 4501.50,
-        "invalidation_asset": "NQ",
-        "invalidation_direction": "above" | "below",
-    }
-}
+```text
+SMT/
+├── smt/
+│   ├── __init__.py        # Public API
+│   ├── break_tracker.py   # Invalidation-level tracking
+│   ├── detector.py        # Stateless SMT detectors
+│   ├── historical.py      # Historical event scanner
+│   ├── manager.py         # Live lifecycle orchestrator
+│   └── registry.py        # In-memory signal registry
+├── tests/
+├── pyproject.toml
+└── README.md
 ```
 
-### Detection Functions
+## Development
 
-```python
-check_micro_smt(df_a1, df_a2, asset_names=("A1", "A2")) -> Optional[Dict]
-check_swing_smt(df_a1, df_a2, lookback_period, asset_names, timestamp_tolerance=1) -> Optional[Dict]
-check_fvg_smt(df_a1, df_a2, lookback_period, asset_names, timestamp_tolerance=1) -> Optional[Dict]
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+python3 -m pytest -q
 ```
 
-### SMTBreak
-
-```python
-tracker = SMTBreak()
-tracker.add(signal, entry_id=optional_id)                     # Register invalidation level
-tracker.update_asset(asset, high, low, close, ts)            # Returns list of broken entries
-tracker.remove(entry_id)
-tracker.clear()
-```
-
-## Data Requirements
-
-Both DataFrames must have:
-- **Index**: matching `DatetimeIndex` values across both assets
-- **Index properties**: unique and sorted ascending
-- **Columns**: `Open`, `High`, `Low`, `Close`
-
-## Design Principles
-
-- **Stateless detection** — no side effects in detector functions
-- **Single source of truth** — registry owns all SMT state
-- **Explicit lifecycle** — clear `active` → `broken` transition
-- **Separation of concerns** — detection, storage, and tracking are independent
-
-## License
-
-MIT License — free to use, modify, and distribute.
+Do not install dependencies into system Python.

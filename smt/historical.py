@@ -193,8 +193,12 @@ def _scan_swing_events(
                         timestamp=index[current_idx],
                         sweeping_asset=asset_names[sweeper],
                         failing_asset=asset_names[1 - sweeper],
-                        reference_price=low_a1[swing_low_a1] if sweeper == 0 else low_a2[swing_low_a2],
-                        invalidation_level=low_a2[swing_low_a2] if sweeper == 0 else low_a1[swing_low_a1],
+                        reference_price=(
+                            low_a1[swing_low_a1] if sweeper == 0 else low_a2[swing_low_a2]
+                        ),
+                        invalidation_level=(
+                            low_a2[swing_low_a2] if sweeper == 0 else low_a1[swing_low_a1]
+                        ),
                         reference_timestamp=reference_timestamp,
                     )
                     rows.append(_event_row(signal))
@@ -295,7 +299,9 @@ def _scan_fvg_events(
                         continue
 
                     highs_in_gap = candles_after_high[candles_after_high > original_bottom]
-                    current_bottom = highs_in_gap.max() if len(highs_in_gap) > 0 else original_bottom
+                    current_bottom = (
+                        highs_in_gap.max() if len(highs_in_gap) > 0 else original_bottom
+                    )
                 else:
                     current_bottom = original_bottom
 

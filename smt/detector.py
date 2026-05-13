@@ -1,16 +1,9 @@
-"""
-SMT (Smart Money Technique) Divergence Detector Module - REFACTORED
+"""Stateless SMT divergence detectors."""
 
-Improvements:
-1. Eliminated code duplication through helper functions
-2. Consistent sweep/fail logic across all functions
-3. More robust extreme validation with <= instead of ==
-4. Clearer structure and better comments
-"""
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, Any, Tuple
 
 
 REQUIRED_OHLC_COLUMNS = ("Open", "High", "Low", "Close")
@@ -56,7 +49,7 @@ def _check_divergence(
     ref_val_a1: float,
     ref_val_a2: float,
     is_bullish: bool,
-    allow_equal_sweep: bool = False
+    allow_equal_sweep: bool = False,
 ) -> Optional[int]:
     """
     Check for divergence between two assets.
@@ -93,7 +86,7 @@ def _check_divergence(
 
     if a1_sweeps:
         return 0
-    elif a2_sweeps:
+    if a2_sweeps:
         return 1
     return None
 
@@ -115,7 +108,7 @@ def _get_timestamp_index(df: pd.DataFrame, timestamp) -> Optional[int]:
 def _validate_current_is_extreme(
     df: pd.DataFrame,
     swing_idx: int,
-    is_bullish: bool
+    is_bullish: bool,
 ) -> bool:
     """
     Validate that current candle is the extreme point between swing and now.
@@ -128,14 +121,11 @@ def _validate_current_is_extreme(
     if len(between_candles) == 0:
         return False
 
-    current_val = df.iloc[-1]['Low' if is_bullish else 'High']
+    current_val = df.iloc[-1]["Low" if is_bullish else "High"]
 
     if is_bullish:
-        # Current must be <= all lows between swing and now
-        return current_val <= between_candles['Low'].min()
-    else:
-        # Current must be >= all highs between swing and now
-        return current_val >= between_candles['High'].max()
+        return current_val <= between_candles["Low"].min()
+    return current_val >= between_candles["High"].max()
 
 
 def _build_signal(
@@ -165,7 +155,7 @@ def _build_signal(
 def check_micro_smt(
     df_a1: pd.DataFrame,
     df_a2: pd.DataFrame,
-    asset_names: Tuple[str, str] = ("A1", "A2")
+    asset_names: Tuple[str, str] = ("A1", "A2"),
 ) -> Optional[Dict[str, Any]]:
     """
     Checks for a 2-candle "Micro SMT" on the most recent candle.
@@ -173,23 +163,25 @@ def check_micro_smt(
     This pattern compares the high/low of the current candle (index -1)
     to the high/low of the previous candle (index -2).
     """
-    # Validate dataframes
     if not _validate_dataframes(df_a1, df_a2, min_len=2):
         return None
 
-    # Current candle values
-    c0_high_a1, c0_low_a1 = df_a1['High'].iloc[-1], df_a1['Low'].iloc[-1]
-    c0_high_a2, c0_low_a2 = df_a2['High'].iloc[-1], df_a2['Low'].iloc[-1]
+    c0_high_a1, c0_low_a1 = df_a1["High"].iloc[-1], df_a1["Low"].iloc[-1]
+    c0_high_a2, c0_low_a2 = df_a2["High"].iloc[-1], df_a2["Low"].iloc[-1]
 
-    # Reference values (previous candle)
-    r_high_a1, r_low_a1 = df_a1['High'].iloc[-2], df_a1['Low'].iloc[-2]
-    r_high_a2, r_low_a2 = df_a2['High'].iloc[-2], df_a2['Low'].iloc[-2]
+    r_high_a1, r_low_a1 = df_a1["High"].iloc[-2], df_a1["Low"].iloc[-2]
+    r_high_a2, r_low_a2 = df_a2["High"].iloc[-2], df_a2["Low"].iloc[-2]
 
     timestamp = df_a1.index[-1]
 
-    # Check for Bearish SMT (sweeping highs)
-    sweeper = _check_divergence(c0_high_a1, c0_high_a2, r_high_a1, r_high_a2,
-                                 is_bullish=False, allow_equal_sweep=True)
+    sweeper = _check_divergence(
+        c0_high_a1,
+        c0_high_a2,
+        r_high_a1,
+        r_high_a2,
+        is_bullish=False,
+        allow_equal_sweep=True,
+    )
     if sweeper is not None:
         return _build_signal(
             signal_type="Bearish Micro SMT",
@@ -200,9 +192,14 @@ def check_micro_smt(
             invalidation_level=r_high_a2 if sweeper == 0 else r_high_a1,
         )
 
-    # Check for Bullish SMT (sweeping lows)
-    sweeper = _check_divergence(c0_low_a1, c0_low_a2, r_low_a1, r_low_a2,
-                                 is_bullish=True, allow_equal_sweep=True)
+    sweeper = _check_divergence(
+        c0_low_a1,
+        c0_low_a2,
+        r_low_a1,
+        r_low_a2,
+        is_bullish=True,
+        allow_equal_sweep=True,
+    )
     if sweeper is not None:
         return _build_signal(
             signal_type="Bullish Micro SMT",
